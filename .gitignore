@@ -2,3 +2,4 @@ data
 checkpoints/*
 !checkpoints/placeholder
 saved_models
+__pycache__
