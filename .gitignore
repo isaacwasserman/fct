@@ -1,3 +1,4 @@
 data
-checkpoints
+checkpoints/*
+!checkpoints/placeholder
 saved_models
