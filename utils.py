@@ -25,3 +25,7 @@ def img_to_patch(x, patch_size, flatten_channels=True):
     if flatten_channels:
         x = x.flatten(2, 4)  # [B, H'*W', C*p_H*p_W]
     return x
+
+
+def assert_shape(x, expected_shape):
+    assert x.shape == expected_shape, f"Expected shape {expected_shape} but got {x.shape}"
