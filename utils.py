@@ -3,13 +3,22 @@ import subprocess
 import os
 
 
-def same_padding(kernel_size):
+def print_memory(prefix=""):
+    print(f"{prefix} Peak memory used: {torch.cuda.memory_allocated(0)/1024/1024/1024} GiB")
+
+
+def same_padding(kernel_size, format="full"):
     if kernel_size % 2 == 1:
         top = left = right = bottom = (kernel_size - 1) // 2
     else:
         top = left = (kernel_size - 1) // 2
         bottom = right = (kernel_size - 1) // 2 + 1
-    return left, right, top, bottom
+    if format == "full":
+        return left, right, top, bottom
+    elif format == "single" and top == bottom and left == right and top == left:
+        return top
+    else:
+        ValueError("Padding is not symmetric and cannot be represented as a single value")
 
 
 def img_to_patch(x, patch_size, flatten_channels=True):
