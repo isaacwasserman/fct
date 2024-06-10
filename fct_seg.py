@@ -1,0 +1,440 @@
+import torch
+import torchvision
+from torchvision import transforms
+import matplotlib.pyplot as plt
+import lightning as L
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+import os
+import numpy as np
+from einops import rearrange
+from datasets import load_dataset
+from utils import *
+from torch.utils.tensorboard import SummaryWriter
+from tqdm.auto import tqdm
+
+DATASET_PATH = "data"
+CHECKPOINT_PATH = "checkpoints"
+
+# Setting the seed
+L.seed_everything(42)
+
+# Ensure that all operations are deterministic on GPU (if used) for reproducibility
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.backends.mps.deterministic = True
+torch.backends.mps.benchmark = False
+
+torch.set_float32_matmul_precision("medium")
+
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+print("Device:", device)
+
+num_workers = 0
+
+dataset = load_dataset("EduardoPacheco/FoodSeg103")
+
+
+def dataset_transform(examples):
+    output_size = (256, 256)
+    crop_params = transforms.RandomResizedCrop.get_params(torch.ones(output_size), scale=(0.8, 1.0), ratio=(0.9, 1.1))
+    should_flip = torch.randint(0, 2, (1,)).item()
+    image_transform = transforms.Compose(
+        [
+            lambda x: torchvision.transforms.functional.crop(x, *crop_params),
+            transforms.Resize((256, 256)),
+            transforms.RandomHorizontalFlip(should_flip),
+            transforms.ToTensor(),
+            transforms.Normalize([0.49139968, 0.48215841, 0.44653091], [0.24703223, 0.24348513, 0.26158784]),
+        ]
+    )
+    examples["image"] = [image_transform(image) for image in examples["image"]]
+    label_transform = transforms.Compose(
+        [
+            lambda x: torchvision.transforms.functional.crop(x, *crop_params),
+            transforms.Resize((256, 256)),
+            transforms.RandomHorizontalFlip(should_flip),
+            transforms.ToTensor(),
+            lambda x: x.squeeze(0).long(),
+        ]
+    )
+    examples["label"] = [label_transform(label) for label in examples["label"]]
+    examples = {"image": examples["image"], "label": examples["label"]}
+    return examples
+
+
+dataset.set_transform(dataset_transform)
+
+
+def get_dataset(batch_size=64, ds_size=None):
+    train_set = dataset["train"]
+    val_set = dataset["validation"]
+    if ds_size is not None:
+        train_set = train_set.select(range(ds_size))
+        val_set = val_set.select(range(ds_size))
+    torch.random.manual_seed(42)
+    train_loader = torch.utils.data.DataLoader(
+        train_set, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=num_workers
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
+    )
+    return train_loader, val_loader
+
+
+class TransformerBlock(torch.nn.Module):
+    def __init__(
+        self,
+        embed_dim=256,
+        hidden_dim=512,
+        q_dim=512,
+        v_dim=256,
+        num_heads=8,
+        dropout=0.0,
+        internal_resolution=(32, 32),
+        block_index=0,
+        kernel_size=1,
+    ):
+        """Attention Block.
+
+        Args:
+            embed_dim: Dimensionality of input and attention feature vectors
+            hidden_dim: Dimensionality of hidden layer in feed-forward network
+                         (usually 2-4x larger than embed_dim)
+            num_heads: Number of heads to use in the Multi-Head Attention block
+            dropout: Amount of dropout to apply in the feed-forward network
+        """
+        super().__init__()
+
+        self.layer_norm_1 = torch.nn.LayerNorm((embed_dim, *internal_resolution))
+        self.q_net = torch.nn.Conv2d(
+            embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+        )
+        self.k_net = torch.nn.Conv2d(
+            embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+        )
+        self.v_net = torch.nn.Conv2d(
+            embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+        )
+        self.head_unification = torch.nn.Conv2d(
+            v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+        )
+        self.layer_norm_2 = torch.nn.LayerNorm((embed_dim, *internal_resolution))
+        self.feed_forward = torch.nn.Sequential(
+            torch.nn.Conv2d(embed_dim, hidden_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
+            torch.nn.GELU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Conv2d(hidden_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
+            torch.nn.Dropout(dropout),
+        )
+        self.num_heads = num_heads
+        self.block_index = block_index
+        self.q_dim = q_dim
+        self.v_dim = v_dim
+        self.embed_dim = embed_dim
+
+    def break_into_heads(self, M):
+        B, D, H, W = M.shape
+        h = self.num_heads
+        return M.reshape(B, h, D // h, H, W).flatten(0, 1)
+
+    def print_memory(self, prefix):
+        pass
+        # if self.block_index == 5:
+        #     print_memory(prefix)
+
+    def spatial_linear_self_attention(self, Q, K, V):
+        """
+        Q: (B, Dq, H, W)
+        K: (B, Dq, H, W)
+        V: (B, Dv, H, W)
+        """
+
+        B, Dq, H, W = Q.shape
+        _, Dv, _, _ = V.shape
+        h = self.num_heads
+
+        assert_shape(Q, (B, Dq, H, W))
+        assert_shape(K, (B, Dq, H, W))
+        assert_shape(V, (B, Dv, H, W))
+
+        self.print_memory("SA start")
+
+        Q = torch.nn.functional.softmax(Q, dim=-3)
+        assert_shape(Q, (B, Dq, H, W))
+        self.print_memory("Q softmax")
+
+        K = torch.nn.functional.softmax(K.flatten(-2), dim=-1).reshape(B, Dq, H, W)
+        assert_shape(K, (B, Dq, H, W))
+        self.print_memory("K softmax")
+
+        Q = self.break_into_heads(Q)
+        assert_shape(Q, (B * h, Dq // h, H, W))
+        self.print_memory("Q into heads")
+
+        K = self.break_into_heads(K)
+        assert_shape(K, (B * h, Dq // h, H, W))
+        self.print_memory("K into heads")
+
+        V = self.break_into_heads(V)
+        assert_shape(V, (B * h, Dv // h, H, W))
+        self.print_memory("V into heads")
+
+        KV = (K.unsqueeze(2) * V.unsqueeze(1)).sum(
+            dim=[-1, -2]
+        )  # (Bh, Dq // h, 1, H, W) x (Bh, 1, Dv // h, H, W) -> (Bh, Dq // h, Dv // h)
+        assert_shape(KV, (B * h, Dq // h, Dv // h))
+        self.print_memory("KV inner product")
+
+        KV = KV.unsqueeze(-1).unsqueeze(-1).permute(0, 2, 1, 3, 4).flatten(0, 1)
+        assert_shape(KV, (B * h * (Dv // h), Dq // h, 1, 1))
+        self.print_memory("KV reshape")
+
+        Q = Q.flatten(0, 1).unsqueeze(0)
+        assert_shape(Q, (1, B * h * (Dq // h), H, W))
+        self.print_memory("Q reshape")
+
+        QKV = torch.nn.functional.conv2d(Q, KV, groups=B * h)
+        assert_shape(QKV, (1, B * h * Dv // h, H, W))
+        self.print_memory("QKV convolution")
+
+        QKV = QKV.view(B, Dv, H, W)
+        assert_shape(QKV, (B, Dv, H, W))
+        self.print_memory("QKV reshape")
+
+        QKV = self.head_unification(QKV)
+        self.print_memory("Head unification")
+
+        return QKV
+
+    def forward(self, x):
+        B, D, H, W = x.shape
+        Dq = self.q_dim
+        Dv = self.v_dim
+        after_norm_1 = self.layer_norm_1(x)
+        assert_shape(after_norm_1, (B, D, H, W))
+        Q = self.q_net(after_norm_1)
+        assert_shape(Q, (B, Dq, H, W))
+        K = self.k_net(after_norm_1)
+        assert_shape(K, (B, Dq, H, W))
+        V = self.v_net(after_norm_1)
+        assert_shape(V, (B, Dv, H, W))
+
+        attn = self.spatial_linear_self_attention(Q, K, V)
+        assert_shape(attn, (B, D, H, W))
+        x = x + attn
+        assert_shape(x, (B, D, H, W))
+        x = self.layer_norm_2(x)
+        assert_shape(x, (B, D, H, W))
+        x = x + self.feed_forward(x)
+        assert_shape(x, (B, D, H, W))
+        return x
+
+
+class VisionTransformer(torch.nn.Module):
+    def __init__(
+        self,
+        embed_dim=256,
+        hidden_dim=512,
+        q_dim=512,
+        v_dim=256,
+        num_channels=3,
+        num_heads=8,
+        num_layers=6,
+        num_classes=10,
+        dropout=0.0,
+        patch_equivalent_mode=True,
+        patch_width=4,
+        input_resolution=(32, 32),
+        transformer_kernel_size=1,
+    ):
+        """Vision Transformer.
+
+        Args:
+            embed_dim: Dimensionality of the input feature vectors to the Transformer
+            hidden_dim: Dimensionality of the hidden layer in the feed-forward networks
+                         within the Transformer
+            num_channels: Number of channels of the input (3 for RGB)
+            num_heads: Number of heads to use in the Multi-Head Attention block
+            num_layers: Number of layers to use in the Transformer
+            num_classes: Number of classes to predict
+            dropout: Amount of dropout to apply in the feed-forward network and
+                      on the input encoding
+        """
+        super().__init__()
+
+        if patch_equivalent_mode:
+            embedding_kernel_size = patch_width
+            stride = patch_width
+            internal_resolution = (input_resolution[0] // patch_width, input_resolution[1] // patch_width)
+        else:
+            embedding_kernel_size = 1
+            stride = 1
+            internal_resolution = input_resolution
+        self.input_layer_cnn = torch.nn.Sequential(
+            torch.nn.ZeroPad2d(same_padding(embedding_kernel_size) if not patch_equivalent_mode else 0),
+            torch.nn.Conv2d(
+                num_channels, num_channels, kernel_size=embedding_kernel_size, stride=stride, padding=0, groups=num_channels
+            ),
+            torch.nn.Conv2d(num_channels, embed_dim, kernel_size=1, stride=1, padding=0),
+            torch.nn.GELU(),
+        )
+        self.transformer = torch.nn.Sequential(
+            *(
+                TransformerBlock(
+                    embed_dim=embed_dim,
+                    hidden_dim=hidden_dim,
+                    q_dim=q_dim,
+                    v_dim=v_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                    internal_resolution=internal_resolution,
+                    block_index=block_index,
+                    kernel_size=transformer_kernel_size,
+                )
+                for block_index in range(num_layers)
+            )
+        )
+        self.segmentation_head = torch.nn.Sequential(
+            torch.nn.LayerNorm((embed_dim, *input_resolution)),
+            torch.nn.ZeroPad2d(same_padding(transformer_kernel_size)),
+            torch.nn.Conv2d(embed_dim, num_classes, kernel_size=transformer_kernel_size),
+        )
+        self.dropout = torch.nn.Dropout(dropout)
+
+        self.positional_bias = torch.nn.Parameter(torch.randn(embed_dim, *internal_resolution))
+
+    def forward(self, x):
+        # Apply depthwise separable convolution embedding
+        x = self.input_layer_cnn(x)  # (B, D, H, W)
+        B, D, H, W = x.shape
+
+        # Add positional embedding
+        pos_embedding = self.positional_bias.unsqueeze(0).repeat(B, 1, 1, 1)  # (B, D, H, W)
+        x = x + pos_embedding
+
+        # Apply Transforrmer
+        x = self.dropout(x)
+        x = self.transformer(x)
+
+        # Segmentation
+        out = self.segmentation_head(x)
+        return out
+
+
+kill_defunct_processes()
+
+
+class ViT:
+    def __init__(self, **hyperparams):
+        super().__init__()
+        self.model = VisionTransformer(**model_kwargs).to(device)
+        prev_runs = [int(x.split("_")[-1]) for x in os.listdir("runs") if "ViT_" in x] + [-1]
+        self.run_id = f"ViT_{max(prev_runs) + 1:03d}"
+        self.log_dir = f"runs/{self.run_id}"
+        self.writer = SummaryWriter(log_dir=self.log_dir)
+        self.best_accuracy = 0
+
+    def calculate_loss(self, y_hat, y):
+        print(y_hat.shape, y.shape)
+        print(y_hat.dtype, y.dtype)
+        plt.imshow(y_hat[0].argmax(dim=0).cpu().numpy())
+        plt.savefig("y_hat.png")
+        plt.imshow(y[0].cpu().numpy())
+        plt.savefig("y.png")
+        print(y_hat[0].permute().argmax(dim=0))
+        print(y[0])
+        return torch.nn.functional.cross_entropy(y_hat, y)
+
+    def calculate_accuracy(self, y_hat, y):
+        y_hat = y_hat.permute(0, 2, 3, 1).reshape(-1, y_hat.shape[1])
+        y = y.flatten()
+        return (y_hat.argmax(dim=1) == y).float().mean()
+
+    def checkpoint(self, accuracy):
+        if accuracy > self.best_accuracy:
+            self.best_accuracy = accuracy
+            torch.save(self.model.state_dict(), f"{self.log_dir}/vit.pth")
+
+    def log_test(self, test_loader, epoch):
+        with torch.no_grad():
+            batch = next(iter(test_loader))
+            imgs, labels = batch
+            imgs = imgs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            preds = self.model(imgs)
+            # Inverse normalization
+            imgs = imgs.cpu() * torch.tensor([0.24703223, 0.24348513, 0.26158784]).view(1, 3, 1, 1) + torch.tensor(
+                [0.49139968, 0.48215841, 0.44653091]
+            ).view(1, 3, 1, 1)
+            grid = create_image_grid(imgs, preds, labels, grid_size=(16, 16))
+            grid = torch.tensor(grid).permute(2, 0, 1)
+            self.writer.add_image("Test", grid, epoch)
+
+    def validate(self, val_loader, epoch):
+        accumulated_loss = 0
+        accumulated_accuracy = 0
+        for batch in tqdm(val_loader, desc="Validation"):
+            with torch.autocast(device_type=device, dtype=torch.float16):
+                imgs, labels = batch
+                imgs = imgs.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                preds = self.model(imgs)
+                accumulated_loss += self.calculate_loss(preds, labels)
+                accumulated_accuracy += self.calculate_accuracy(preds, labels)
+        accumulated_loss /= len(val_loader)
+        accumulated_accuracy /= len(val_loader)
+
+        self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
+        self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
+
+        self.checkpoint(accumulated_accuracy)
+
+    def train_epoch(self, train_loader, optimizer, scaler, epoch):
+        steps_per_epoch = len(train_loader)
+        for batch_idx, batch in tqdm(enumerate(train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
+            with torch.autocast(device_type=device, dtype=torch.float16):
+                imgs, labels = batch["image"], batch["label"]
+                imgs = imgs.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                preds = self.model(imgs)
+                loss = self.calculate_loss(preds, labels)
+                with torch.no_grad():
+                    accuracy = self.calculate_accuracy(preds, labels)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+
+            step = epoch * steps_per_epoch + batch_idx
+            self.writer.add_scalar("Loss/train", loss, step)
+            self.writer.add_scalar("Accuracy/train", accuracy, step)
+
+    def fit(self, train_loader, val_loader, n_epochs=1):
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, fused=True)
+        scaler = torch.cuda.amp.GradScaler()
+        for epoch in range(n_epochs):
+            self.train_epoch(train_loader, optimizer, scaler, epoch)
+
+            with torch.no_grad():
+                self.validate(val_loader, epoch)
+
+
+model_kwargs = {
+    "embed_dim": 256,
+    "hidden_dim": 512,
+    "q_dim": 512,
+    "v_dim": 256,
+    "num_heads": 8,
+    "num_layers": 6,
+    "num_channels": 3,
+    "num_classes": 103,
+    "dropout": 0.2,
+    "patch_equivalent_mode": False,
+    "input_resolution": (256, 256),
+    "transformer_kernel_size": 3,
+}
+
+train_loader, val_loader = get_dataset(batch_size=1, ds_size=None)
+vit = ViT(**model_kwargs)
+vit.fit(train_loader, val_loader, n_epochs=180)
