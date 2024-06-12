@@ -92,6 +92,7 @@ class TransformerBlock(torch.nn.Module):
 
         # Compute K^T @ V (kind of)
         # i.e. outer product of K and V, summed over spatial dimensions
+        # (Bh, Dq//h, 1, H, W) x (Bh, 1, Dv//h, H, W) -> (Bh, Dq//h, Dv//h, H, W) -> (Bh, Dq//h, Dv//h)
         KV = (K.unsqueeze(2) * V.unsqueeze(1)).sum(dim=[-1, -2])
         assert_shape(KV, (B * h, Dq // h, Dv // h))
 
