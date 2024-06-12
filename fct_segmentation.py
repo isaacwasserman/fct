@@ -11,14 +11,15 @@ from datasets import load_dataset
 from utils import *
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
+from torch.utils.tensorboard import SummaryWriter
+import time
+from fct import *
 
 DATASET_PATH = "data"
 CHECKPOINT_PATH = "checkpoints"
 
-# Setting the seed
 L.seed_everything(42)
 
-# Ensure that all operations are deterministic on GPU (if used) for reproducibility
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.backends.mps.deterministic = True
@@ -51,10 +52,9 @@ def dataset_transform(examples):
     label_transform = transforms.Compose(
         [
             lambda x: torchvision.transforms.functional.crop(x, *crop_params),
-            transforms.Resize((256, 256)),
+            transforms.Resize((256, 256), interpolation=transforms.InterpolationMode.NEAREST),
             transforms.RandomHorizontalFlip(should_flip),
-            transforms.ToTensor(),
-            lambda x: x.squeeze(0).long(),
+            lambda x: torch.tensor(np.array(x)).squeeze(0).long(),
         ]
     )
     examples["label"] = [label_transform(label) for label in examples["label"]]
@@ -71,7 +71,7 @@ def get_dataset(batch_size=64, ds_size=None):
     if ds_size is not None:
         train_set = train_set.select(range(ds_size))
         val_set = val_set.select(range(ds_size))
-    torch.random.manual_seed(42)
+    L.seed_everything(42)
     train_loader = torch.utils.data.DataLoader(
         train_set, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=num_workers
     )
@@ -79,155 +79,6 @@ def get_dataset(batch_size=64, ds_size=None):
         val_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
     )
     return train_loader, val_loader
-
-
-class TransformerBlock(torch.nn.Module):
-    def __init__(
-        self,
-        embed_dim=256,
-        hidden_dim=512,
-        q_dim=512,
-        v_dim=256,
-        num_heads=8,
-        dropout=0.0,
-        internal_resolution=(32, 32),
-        block_index=0,
-        kernel_size=1,
-    ):
-        """Attention Block.
-
-        Args:
-            embed_dim: Dimensionality of input and attention feature vectors
-            hidden_dim: Dimensionality of hidden layer in feed-forward network
-                         (usually 2-4x larger than embed_dim)
-            num_heads: Number of heads to use in the Multi-Head Attention block
-            dropout: Amount of dropout to apply in the feed-forward network
-        """
-        super().__init__()
-
-        self.layer_norm_1 = torch.nn.LayerNorm((embed_dim, *internal_resolution))
-        self.q_net = torch.nn.Conv2d(
-            embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        )
-        self.k_net = torch.nn.Conv2d(
-            embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        )
-        self.v_net = torch.nn.Conv2d(
-            embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        )
-        self.head_unification = torch.nn.Conv2d(
-            v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        )
-        self.layer_norm_2 = torch.nn.LayerNorm((embed_dim, *internal_resolution))
-        self.feed_forward = torch.nn.Sequential(
-            torch.nn.Conv2d(embed_dim, hidden_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
-            torch.nn.GELU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Conv2d(hidden_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
-            torch.nn.Dropout(dropout),
-        )
-        self.num_heads = num_heads
-        self.block_index = block_index
-        self.q_dim = q_dim
-        self.v_dim = v_dim
-        self.embed_dim = embed_dim
-
-    def break_into_heads(self, M):
-        B, D, H, W = M.shape
-        h = self.num_heads
-        return M.reshape(B, h, D // h, H, W).flatten(0, 1)
-
-    def print_memory(self, prefix):
-        pass
-        # if self.block_index == 5:
-        #     print_memory(prefix)
-
-    def spatial_linear_self_attention(self, Q, K, V):
-        """
-        Q: (B, Dq, H, W)
-        K: (B, Dq, H, W)
-        V: (B, Dv, H, W)
-        """
-
-        B, Dq, H, W = Q.shape
-        _, Dv, _, _ = V.shape
-        h = self.num_heads
-
-        assert_shape(Q, (B, Dq, H, W))
-        assert_shape(K, (B, Dq, H, W))
-        assert_shape(V, (B, Dv, H, W))
-
-        self.print_memory("SA start")
-
-        Q = torch.nn.functional.softmax(Q, dim=-3)
-        assert_shape(Q, (B, Dq, H, W))
-        self.print_memory("Q softmax")
-
-        K = torch.nn.functional.softmax(K.flatten(-2), dim=-1).reshape(B, Dq, H, W)
-        assert_shape(K, (B, Dq, H, W))
-        self.print_memory("K softmax")
-
-        Q = self.break_into_heads(Q)
-        assert_shape(Q, (B * h, Dq // h, H, W))
-        self.print_memory("Q into heads")
-
-        K = self.break_into_heads(K)
-        assert_shape(K, (B * h, Dq // h, H, W))
-        self.print_memory("K into heads")
-
-        V = self.break_into_heads(V)
-        assert_shape(V, (B * h, Dv // h, H, W))
-        self.print_memory("V into heads")
-
-        KV = (K.unsqueeze(2) * V.unsqueeze(1)).sum(
-            dim=[-1, -2]
-        )  # (Bh, Dq // h, 1, H, W) x (Bh, 1, Dv // h, H, W) -> (Bh, Dq // h, Dv // h)
-        assert_shape(KV, (B * h, Dq // h, Dv // h))
-        self.print_memory("KV inner product")
-
-        KV = KV.unsqueeze(-1).unsqueeze(-1).permute(0, 2, 1, 3, 4).flatten(0, 1)
-        assert_shape(KV, (B * h * (Dv // h), Dq // h, 1, 1))
-        self.print_memory("KV reshape")
-
-        Q = Q.flatten(0, 1).unsqueeze(0)
-        assert_shape(Q, (1, B * h * (Dq // h), H, W))
-        self.print_memory("Q reshape")
-
-        QKV = torch.nn.functional.conv2d(Q, KV, groups=B * h)
-        assert_shape(QKV, (1, B * h * Dv // h, H, W))
-        self.print_memory("QKV convolution")
-
-        QKV = QKV.view(B, Dv, H, W)
-        assert_shape(QKV, (B, Dv, H, W))
-        self.print_memory("QKV reshape")
-
-        QKV = self.head_unification(QKV)
-        self.print_memory("Head unification")
-
-        return QKV
-
-    def forward(self, x):
-        B, D, H, W = x.shape
-        Dq = self.q_dim
-        Dv = self.v_dim
-        after_norm_1 = self.layer_norm_1(x)
-        assert_shape(after_norm_1, (B, D, H, W))
-        Q = self.q_net(after_norm_1)
-        assert_shape(Q, (B, Dq, H, W))
-        K = self.k_net(after_norm_1)
-        assert_shape(K, (B, Dq, H, W))
-        V = self.v_net(after_norm_1)
-        assert_shape(V, (B, Dv, H, W))
-
-        attn = self.spatial_linear_self_attention(Q, K, V)
-        assert_shape(attn, (B, D, H, W))
-        x = x + attn
-        assert_shape(x, (B, D, H, W))
-        x = self.layer_norm_2(x)
-        assert_shape(x, (B, D, H, W))
-        x = x + self.feed_forward(x)
-        assert_shape(x, (B, D, H, W))
-        return x
 
 
 class VisionTransformer(torch.nn.Module):
@@ -335,14 +186,6 @@ class ViT:
         self.best_accuracy = 0
 
     def calculate_loss(self, y_hat, y):
-        print(y_hat.shape, y.shape)
-        print(y_hat.dtype, y.dtype)
-        plt.imshow(y_hat[0].argmax(dim=0).cpu().numpy())
-        plt.savefig("y_hat.png")
-        plt.imshow(y[0].cpu().numpy())
-        plt.savefig("y.png")
-        print(y_hat[0].permute().argmax(dim=0))
-        print(y[0])
         return torch.nn.functional.cross_entropy(y_hat, y)
 
     def calculate_accuracy(self, y_hat, y):
@@ -355,10 +198,28 @@ class ViT:
             self.best_accuracy = accuracy
             torch.save(self.model.state_dict(), f"{self.log_dir}/vit.pth")
 
+    def visualize_batch(self, images, labels, predictions):
+        B = images.shape[0]
+        size = 15
+        fig, axs = plt.subplots(B, 3, figsize=(size, size * B / 3))
+        for i in range(B):
+            axs[i, 0].imshow(images[i].permute(1, 2, 0))
+            axs[i, 0].axes.get_xaxis().set_visible(False)
+            axs[i, 0].axes.get_yaxis().set_visible(False)
+            axs[i, 1].imshow(labels[i].squeeze())
+            axs[i, 1].axes.get_xaxis().set_visible(False)
+            axs[i, 1].axes.get_yaxis().set_visible(False)
+            axs[i, 2].imshow(predictions[i].squeeze())
+            axs[i, 2].axes.get_xaxis().set_visible(False)
+            axs[i, 2].axes.get_yaxis().set_visible(False)
+        plt.tight_layout()
+        grid_image = get_fig_as_array(fig)
+        return grid_image
+
     def log_test(self, test_loader, epoch):
         with torch.no_grad():
             batch = next(iter(test_loader))
-            imgs, labels = batch
+            imgs, labels = batch["image"], batch["label"]
             imgs = imgs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             preds = self.model(imgs)
@@ -366,16 +227,18 @@ class ViT:
             imgs = imgs.cpu() * torch.tensor([0.24703223, 0.24348513, 0.26158784]).view(1, 3, 1, 1) + torch.tensor(
                 [0.49139968, 0.48215841, 0.44653091]
             ).view(1, 3, 1, 1)
-            grid = create_image_grid(imgs, preds, labels, grid_size=(16, 16))
-            grid = torch.tensor(grid).permute(2, 0, 1)
-            self.writer.add_image("Test", grid, epoch)
+            predictions = preds.argmax(1).cpu()
+            labels = labels.cpu()
+            grid_image = self.visualize_batch(imgs, labels, predictions)
+            grid_image = torch.tensor(grid_image).permute(2, 0, 1)
+            self.writer.add_image("Test", grid_image, epoch)
 
     def validate(self, val_loader, epoch):
         accumulated_loss = 0
         accumulated_accuracy = 0
         for batch in tqdm(val_loader, desc="Validation"):
             with torch.autocast(device_type=device, dtype=torch.float16):
-                imgs, labels = batch
+                imgs, labels = batch["image"], batch["label"]
                 imgs = imgs.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
                 preds = self.model(imgs)
@@ -418,23 +281,26 @@ class ViT:
 
             with torch.no_grad():
                 self.validate(val_loader, epoch)
+                self.log_test(val_loader, epoch)
 
 
-model_kwargs = {
-    "embed_dim": 256,
-    "hidden_dim": 512,
-    "q_dim": 512,
-    "v_dim": 256,
-    "num_heads": 8,
-    "num_layers": 6,
-    "num_channels": 3,
-    "num_classes": 103,
-    "dropout": 0.2,
-    "patch_equivalent_mode": False,
-    "input_resolution": (256, 256),
-    "transformer_kernel_size": 3,
-}
+if __name__ == "__main__":
 
-train_loader, val_loader = get_dataset(batch_size=1, ds_size=None)
-vit = ViT(**model_kwargs)
-vit.fit(train_loader, val_loader, n_epochs=180)
+    model_kwargs = {
+        "embed_dim": 64,
+        "hidden_dim": 128,
+        "q_dim": 128,
+        "v_dim": 64,
+        "num_heads": 8,
+        "num_layers": 3,
+        "num_channels": 3,
+        "num_classes": 104,
+        "dropout": 0.2,
+        "patch_equivalent_mode": False,
+        "input_resolution": (256, 256),
+        "transformer_kernel_size": 3,
+    }
+
+    train_loader, val_loader = get_dataset(batch_size=8, ds_size=None)
+    vit = ViT(**model_kwargs)
+    vit.fit(train_loader, val_loader, n_epochs=180)

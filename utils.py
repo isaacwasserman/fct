@@ -45,9 +45,7 @@ def img_to_patch(x, patch_size, flatten_channels=True):
 
 
 def assert_shape(x, expected_shape):
-    pass
-    # print("Asserting shape", x.shape, expected_shape)
-    # assert x.shape == expected_shape, f"Expected shape {expected_shape} but got {x.shape}"
+    assert x.shape == expected_shape, f"Expected shape {expected_shape} but got {x.shape}"
 
 
 def get_defunct_processes():
@@ -87,6 +85,19 @@ def kill_defunct_processes():
             print(f"Process with PID {ppid} not found")
 
 
+def get_fig_as_array(fig):
+    # Save the plot to a BytesIO object
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    plt.close(fig)
+    buf.seek(0)
+
+    # Convert the BytesIO object to a numpy array
+    output_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+    output_image = cv2.cvtColor(cv2.imdecode(output_image, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+    return output_image
+
+
 def create_image_grid(images, predictions, labels, grid_size=(4, 4)):
     """
     Create a grid of images with outlines indicating correct and incorrect predictions.
@@ -123,13 +134,6 @@ def create_image_grid(images, predictions, labels, grid_size=(4, 4)):
         ax.axis("off")
 
     plt.tight_layout()
-    # Save the plot to a BytesIO object
-    buf = BytesIO()
-    plt.savefig(buf, format="png")
-    plt.close(fig)
-    buf.seek(0)
 
-    # Convert the BytesIO object to a numpy array
-    grid_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-    grid_image = cv2.imdecode(grid_image, cv2.IMREAD_COLOR)
+    grid_image = get_fig_as_array(fig)
     return grid_image

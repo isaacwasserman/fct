@@ -1,0 +1,8 @@
+lightning
+matplotlib
+tensorboard
+einops
+line_profiler
+opencv-python
+datasets
+pillow >= 9.4.0
