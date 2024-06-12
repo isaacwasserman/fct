@@ -32,7 +32,8 @@ print("Device:", device)
 
 num_workers = 0
 
-dataset = load_dataset("EduardoPacheco/FoodSeg103")
+# dataset = load_dataset("EduardoPacheco/FoodSeg103")
+train_dataset = load_dataset("Chris1/cityscapes", split="train[:5]")
 
 
 def dataset_transform(examples):
