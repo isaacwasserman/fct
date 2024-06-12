@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 import time
 from fct import *
 
-DATASET_PATH = "data"
+DATASET_PATH = "/workspace/data/cityscapes"
 CHECKPOINT_PATH = "checkpoints"
 
 L.seed_everything(42)
@@ -33,7 +33,7 @@ print("Device:", device)
 num_workers = 0
 
 # dataset = load_dataset("EduardoPacheco/FoodSeg103")
-train_dataset = load_dataset("Chris1/cityscapes", split="train[:5]")
+dataset = load_dataset("Chris1/cityscapes", cache_dir=DATASET_PATH)
 
 
 def dataset_transform(examples):
@@ -42,7 +42,7 @@ def dataset_transform(examples):
     should_flip = torch.randint(0, 2, (1,)).item()
     image_transform = transforms.Compose(
         [
-            lambda x: torchvision.transforms.functional.crop(x, *crop_params),
+            # lambda x: torchvision.transforms.functional.crop(x, *crop_params),
             transforms.Resize((256, 256)),
             transforms.RandomHorizontalFlip(should_flip),
             transforms.ToTensor(),
@@ -52,13 +52,13 @@ def dataset_transform(examples):
     examples["image"] = [image_transform(image) for image in examples["image"]]
     label_transform = transforms.Compose(
         [
-            lambda x: torchvision.transforms.functional.crop(x, *crop_params),
+            # lambda x: torchvision.transforms.functional.crop(x, *crop_params),
             transforms.Resize((256, 256), interpolation=transforms.InterpolationMode.NEAREST),
             transforms.RandomHorizontalFlip(should_flip),
-            lambda x: torch.tensor(np.array(x)).squeeze(0).long(),
+            lambda x: torch.tensor(np.array(x)).squeeze(0).long()[..., 0],
         ]
     )
-    examples["label"] = [label_transform(label) for label in examples["label"]]
+    examples["label"] = [label_transform(label) for label in examples["semantic_segmentation"]]
     examples = {"image": examples["image"], "label": examples["label"]}
     return examples
 
@@ -180,6 +180,8 @@ class ViT:
     def __init__(self, **hyperparams):
         super().__init__()
         self.model = VisionTransformer(**model_kwargs).to(device)
+        if not os.path.exists("runs"):
+            os.makedirs("runs")
         prev_runs = [int(x.split("_")[-1]) for x in os.listdir("runs") if "ViT_" in x] + [-1]
         self.run_id = f"ViT_{max(prev_runs) + 1:03d}"
         self.log_dir = f"runs/{self.run_id}"
@@ -193,6 +195,12 @@ class ViT:
         y_hat = y_hat.permute(0, 2, 3, 1).reshape(-1, y_hat.shape[1])
         y = y.flatten()
         return (y_hat.argmax(dim=1) == y).float().mean()
+
+    def calculate_miou(self, y_hat, y):
+        y_hat = y_hat.argmax(dim=1)
+        intersection = torch.logical_and(y_hat == y, y != 0).sum()
+        union = torch.logical_or(y_hat == y, y != 0).sum()
+        return intersection / union
 
     def checkpoint(self, accuracy):
         if accuracy > self.best_accuracy:
@@ -237,6 +245,7 @@ class ViT:
     def validate(self, val_loader, epoch):
         accumulated_loss = 0
         accumulated_accuracy = 0
+        accumulated_miou = 0
         for batch in tqdm(val_loader, desc="Validation"):
             with torch.autocast(device_type=device, dtype=torch.float16):
                 imgs, labels = batch["image"], batch["label"]
@@ -245,11 +254,14 @@ class ViT:
                 preds = self.model(imgs)
                 accumulated_loss += self.calculate_loss(preds, labels)
                 accumulated_accuracy += self.calculate_accuracy(preds, labels)
+                accumulated_miou += self.calculate_miou(preds, labels)
         accumulated_loss /= len(val_loader)
         accumulated_accuracy /= len(val_loader)
+        accumulated_miou /= len(val_loader)
 
         self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
         self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
+        self.writer.add_scalar("mIoU/val", accumulated_miou, epoch)
 
         self.checkpoint(accumulated_accuracy)
 
@@ -264,6 +276,7 @@ class ViT:
                 loss = self.calculate_loss(preds, labels)
                 with torch.no_grad():
                     accuracy = self.calculate_accuracy(preds, labels)
+                    miou = self.calculate_miou(preds, labels)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -273,6 +286,7 @@ class ViT:
             step = epoch * steps_per_epoch + batch_idx
             self.writer.add_scalar("Loss/train", loss, step)
             self.writer.add_scalar("Accuracy/train", accuracy, step)
+            self.writer.add_scalar("mIoU/train", miou, step)
 
     def fit(self, train_loader, val_loader, n_epochs=1):
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, fused=True)
@@ -295,7 +309,7 @@ if __name__ == "__main__":
         "num_heads": 8,
         "num_layers": 3,
         "num_channels": 3,
-        "num_classes": 104,
+        "num_classes": 34,
         "dropout": 0.2,
         "patch_equivalent_mode": False,
         "input_resolution": (256, 256),
