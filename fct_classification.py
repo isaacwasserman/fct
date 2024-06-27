@@ -275,6 +275,6 @@ if __name__ == "__main__":
 
     model_kwargs = standard_vit_equivalent_kwargs
 
-    train_loader, val_loader, test_loader = get_dataset(batch_size=1024, ds_len=45000)
+    train_loader, val_loader, test_loader = get_dataset(batch_size=128, ds_len=45000)
     vit = ViT(**model_kwargs)
     vit.fit(train_loader, val_loader, n_epochs=180)

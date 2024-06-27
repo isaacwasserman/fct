@@ -37,6 +37,7 @@ class TransformerBlock(torch.nn.Module):
         self.v_net = torch.nn.Conv2d(
             embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
+        self.bias_net = torch.nn.Conv2d(embed_dim, embed_dim, kernel_size=internal_resolution, padding=0, groups=embed_dim)
         self.head_unification = torch.nn.Conv2d(
             v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
@@ -59,7 +60,7 @@ class TransformerBlock(torch.nn.Module):
         h = self.num_heads
         return M.reshape(B, h, D // h, H, W).flatten(0, 1)
 
-    def spatial_linear_self_attention(self, Q, K, V):
+    def spatial_linear_self_attention(self, x, Q, K, V):
         """
         Q: (B, Dq, H, W)
         K: (B, Dq, H, W)
@@ -68,8 +69,10 @@ class TransformerBlock(torch.nn.Module):
 
         B, Dq, H, W = Q.shape
         _, Dv, _, _ = V.shape
+        _, Dm, _, _ = x.shape
         h = self.num_heads
 
+        assert_shape(x, (B, Dm, H, W))
         assert_shape(Q, (B, Dq, H, W))
         assert_shape(K, (B, Dq, H, W))
         assert_shape(V, (B, Dv, H, W))
@@ -104,8 +107,13 @@ class TransformerBlock(torch.nn.Module):
         Q = Q.flatten(0, 1).unsqueeze(0)
         assert_shape(Q, (1, B * h * (Dq // h), H, W))
 
+        bias = self.bias_net(x)
+        assert_shape(bias, (B, Dm, 1, 1))
+        bias = bias.flatten()
+        assert_shape(bias, (B * h * (Dv // h),))
+
         # QKV is grouped (B*h groups) convolution of Q with KV
-        QKV = torch.nn.functional.conv2d(Q, KV, groups=B * h)
+        QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h)
         assert_shape(QKV, (1, B * h * Dv // h, H, W))
         QKV = QKV.view(B, Dv, H, W)
         assert_shape(QKV, (B, Dv, H, W))
@@ -177,7 +185,7 @@ class TransformerBlock(torch.nn.Module):
         V = self.v_net(after_norm_1)
         assert_shape(V, (B, Dv, H, W))
 
-        attn = self.spatial_linear_self_attention(Q, K, V)
+        attn = self.spatial_linear_self_attention(x, Q, K, V)
         assert_shape(attn, (B, D, H, W))
         x = x + attn
         assert_shape(x, (B, D, H, W))
