@@ -224,7 +224,16 @@ class ViT:
     def train_epoch(self, train_loader, optimizer, scaler, epoch):
         steps_per_epoch = len(train_loader)
         for batch_idx, batch in tqdm(enumerate(train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
-            with torch.autocast(device_type=device, dtype=torch.float16):
+            if device in ["cuda", "xpu", "privateuseone"]:
+                with torch.autocast(device_type=device, dtype=torch.float16):
+                    imgs, labels = batch
+                    imgs = imgs.to(device, non_blocking=True)
+                    labels = labels.to(device, non_blocking=True)
+                    preds = self.model(imgs)
+                    loss = self.calculate_loss(preds, labels)
+                    with torch.no_grad():
+                        accuracy = self.calculate_accuracy(preds, labels)
+            else:
                 imgs, labels = batch
                 imgs = imgs.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
@@ -243,7 +252,10 @@ class ViT:
             self.writer.add_scalar("Accuracy/train", accuracy, step)
 
     def fit(self, train_loader, val_loader, n_epochs=1):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, fused=True)
+        fused = False
+        if device in ["cuda", "xpu", "privateuseone"]:
+            fused = True
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, fused=fused)
         scaler = torch.cuda.amp.GradScaler()
         for epoch in range(n_epochs):
             self.train_epoch(train_loader, optimizer, scaler, epoch)

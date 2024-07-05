@@ -93,15 +93,39 @@ class TransformerBlock(torch.nn.Module):
         V = self.break_into_heads(V)
         assert_shape(V, (B * h, Dv // h, H, W))
 
-        # Compute K^T @ V (kind of)
-        # i.e. outer product of K and V, summed over spatial dimensions
+        # Old 1x1 KV calculation
+        # ---------------------------------------
+        # # Compute K^T @ V (kind of)
+        # # i.e. outer product of K and V, summed over spatial dimensions
         # (Bh, Dq//h, 1, H, W) x (Bh, 1, Dv//h, H, W) -> (Bh, Dq//h, Dv//h, H, W) -> (Bh, Dq//h, Dv//h)
-        KV = (K.unsqueeze(2) * V.unsqueeze(1)).sum(dim=[-1, -2])
-        assert_shape(KV, (B * h, Dq // h, Dv // h))
+        # KV = (K.unsqueeze(2) * V.unsqueeze(1)).sum(dim=[-1, -2])
+        # assert_shape(KV, (B * h, Dq // h, Dv // h))
 
-        # Reshape KV into 2D convolutional kernels
-        KV = KV.unsqueeze(-1).unsqueeze(-1).permute(0, 2, 1, 3, 4).flatten(0, 1)
-        assert_shape(KV, (B * h * (Dv // h), Dq // h, 1, 1))
+        # # Reshape KV into 2D convolutional kernels
+        # KV = KV.unsqueeze(-1).unsqueeze(-1).permute(0, 2, 1, 3, 4).flatten(0, 1)
+        # assert_shape(KV, (B * h * (Dv // h), Dq // h, 1, 1))
+        # ---------------------------------------
+
+        # New kxk KV calculation
+        # ---------------------------------------
+        def sum_pool_to_resolution(x, output_resolution=3):
+            a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="nearest")
+            a = a * (output_resolution**2)
+            return a
+
+        k = 3
+        KV = K.unsqueeze(2) * V.unsqueeze(1)
+        assert_shape(KV, (B * h, Dq // h, Dv // h, H, W))
+        KV = KV.flatten(0, 1)
+        assert_shape(KV, (B * h * Dq // h, Dv // h, H, W))
+        KV = sum_pool_to_resolution(KV, output_resolution=k)
+        assert_shape(KV, (B * h * Dq // h, Dv // h, k, k))
+        KV = KV.reshape(B * h, Dq // h, Dv // h, k, k)
+        assert_shape(KV, (B * h, Dq // h, Dv // h, k, k))
+        KV = KV.permute(0, 2, 1, 3, 4)
+        assert_shape(KV, (B * h, Dv // h, Dq // h, k, k))
+        KV = KV.flatten(0, 1)
+        assert_shape(KV, (B * h * (Dv // h), Dq // h, k, k))
 
         # Reshape Q into a single B * Dq channel image
         Q = Q.flatten(0, 1).unsqueeze(0)
@@ -113,7 +137,7 @@ class TransformerBlock(torch.nn.Module):
         assert_shape(bias, (B * h * (Dv // h),))
 
         # QKV is grouped (B*h groups) convolution of Q with KV
-        QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h)
+        QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h, padding=same_padding(k, format="single"))
         assert_shape(QKV, (1, B * h * Dv // h, H, W))
         QKV = QKV.view(B, Dv, H, W)
         assert_shape(QKV, (B, Dv, H, W))
