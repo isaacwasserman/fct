@@ -88,7 +88,7 @@ def kill_defunct_processes():
 def get_fig_as_array(fig):
     # Save the plot to a BytesIO object
     buf = BytesIO()
-    plt.savefig(buf, format="png")
+    fig.savefig(buf, format="png")
     plt.close(fig)
     buf.seek(0)
 
@@ -98,7 +98,7 @@ def get_fig_as_array(fig):
     return output_image
 
 
-def create_image_grid(images, predictions, labels, grid_size=(4, 4)):
+def create_image_grid_seg(images, predictions, labels, grid_size=(4, 4)):
     """
     Create a grid of images with outlines indicating correct and incorrect predictions.
 
@@ -134,6 +134,56 @@ def create_image_grid(images, predictions, labels, grid_size=(4, 4)):
         ax.axis("off")
 
     plt.tight_layout()
+    plt.show()
 
     grid_image = get_fig_as_array(fig)
     return grid_image
+
+
+def create_image_grid_denoise(images, predictions, labels, grid_size=(4, 4)):
+    """
+    Create a grid of images with outlines indicating correct and incorrect predictions.
+
+    Args:
+    images (tensor): Tensor of images.
+    predictions (tensor): Tensor of predictions.
+    labels (tensor): Tensor of labels.
+    grid_size (tuple): Size of the grid (rows, cols).
+
+    Returns:
+    The image grid as an array.
+    """
+    # Convert tensors to numpy arrays for easier manipulation
+    images = images.permute(0, 2, 3, 1).cpu().numpy()
+    predictions = predictions.permute(0, 2, 3, 1).cpu().numpy()
+    labels = labels.permute(0, 2, 3, 1).cpu().numpy()
+
+    size = 5
+    fig, axes = plt.subplots(grid_size[0], grid_size[1] * 3, figsize=(size * grid_size[0], 3 * size * grid_size[1]))
+
+    for i in range(grid_size[0] * grid_size[1]):
+        row = i // grid_size[1]
+        col = i % grid_size[1]
+        if i < images.shape[0]:
+            if col < grid_size[1]:
+                axes[row, col * 3].imshow(images[i])
+                axes[row, col * 3 + 1].imshow(predictions[i])
+                axes[row, col * 3 + 2].imshow(labels[i])
+
+        axes[row, col * 3].axis("off")
+        axes[row, col * 3 + 1].axis("off")
+        axes[row, col * 3 + 2].axis("off")
+
+    plt.tight_layout()
+
+    grid_image = get_fig_as_array(fig)
+    return grid_image
+
+
+def rgb2ycbcr(im_rgb):
+    im_rgb = im_rgb.astype(np.float32)
+    im_ycrcb = cv2.cvtColor(im_rgb, cv2.COLOR_RGB2YCR_CB)
+    im_ycbcr = im_ycrcb[:, :, (0, 2, 1)].astype(np.float32)
+    im_ycbcr[:, :, 0] = (im_ycbcr[:, :, 0] * (235 - 16) + 16) / 255.0  # to [16/255, 235/255]
+    im_ycbcr[:, :, 1:] = (im_ycbcr[:, :, 1:] * (240 - 16) + 16) / 255.0  # to [16/255, 240/255]
+    return im_ycbcr
