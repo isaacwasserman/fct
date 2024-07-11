@@ -109,7 +109,9 @@ class TransformerBlock(torch.nn.Module):
         # New kxk KV calculation
         # ---------------------------------------
         def sum_pool_to_resolution(x, output_resolution=3):
-            a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="nearest")
+            # Temporarily changing interpolation mode to bilinear because of torch bug
+            # a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="nearest")
+            a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="bilinear")
             a = a * (output_resolution**2)
             return a
 
