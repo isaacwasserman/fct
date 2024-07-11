@@ -304,8 +304,8 @@ class ViT:
 
     def train_epoch(self, optimizer, scaler, epoch, test_freq=0.1, log_freq=0.01, debug_steps=-1):
         steps_per_epoch = len(self.train_loader)
-        test_freq = max(1, int(steps_per_epoch * test_freq)) if test_freq > 0 else steps_per_epoch
-        log_freq = max(1, int(steps_per_epoch * log_freq)) if log_freq > 0 else steps_per_epoch
+        test_freq = max(1, int(steps_per_epoch * test_freq)) if test_freq > 0 else -1
+        log_freq = max(1, int(steps_per_epoch * log_freq)) if log_freq > 0 else -1
         accumulated_loss = 0
         accumulated_accuracy = 0
         for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
@@ -320,7 +320,7 @@ class ViT:
                     loss = self.calculate_loss(preds, labels)
                     with torch.no_grad():
                         accuracy = self.calculate_psnr(preds, labels)
-                        if batch_idx % test_freq == 0:
+                        if batch_idx % test_freq == 0 and test_freq > 0:
                             self.log_test(epoch, step=batch_idx)
             else:
                 batch = batch.to(device, non_blocking=True)
@@ -330,7 +330,7 @@ class ViT:
                 loss = self.calculate_loss(preds, labels)
                 with torch.no_grad():
                     accuracy = self.calculate_psnr(preds, labels)
-                    if batch_idx % test_freq == 0:
+                    if batch_idx % test_freq == 0 and test_freq > 0:
                         self.log_test(epoch, step=batch_idx)
 
             scaler.scale(loss).backward()
@@ -341,7 +341,7 @@ class ViT:
             accumulated_loss += loss
             accumulated_accuracy += accuracy
 
-            if batch_idx % log_freq == 0:
+            if batch_idx % log_freq == 0 and log_freq > 0:
                 accumulated_loss /= log_freq
                 accumulated_accuracy /= log_freq
                 step = epoch * steps_per_epoch + batch_idx
@@ -349,11 +349,6 @@ class ViT:
                 self.writer.add_scalar("Accuracy/train", accumulated_accuracy, step)
                 accumulated_loss = 0
                 accumulated_accuracy = 0
-
-            # step = epoch * steps_per_epoch + batch_idx
-
-            # self.writer.add_scalar("Loss/train", loss, step)
-            # self.writer.add_scalar("Accuracy/train", accuracy, step)
 
     def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, log_freq=0.1, debug_steps=-1):
         fused = device in ["cuda", "xpu", "privateuseone"]
@@ -393,7 +388,7 @@ if __name__ == "__main__":
     # device = "cpu"
     print("Device:", device)
 
-    num_workers = 4
+    num_workers = 0
 
     ds_mean = [0.49139968, 0.48215841, 0.44653091]
     ds_std = [0.24703223, 0.24348513, 0.26158784]
