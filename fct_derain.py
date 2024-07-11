@@ -25,10 +25,14 @@ def blah(x):
 
 
 # Define the dataset
-class Rain13k(torch.utils.data.Dataset):
+class Rain13K(torch.utils.data.Dataset):
     def __init__(self, root, split, transform=None):
+        # Get absolute path of current python file
+        this_file = os.path.abspath(__file__)
+        this_dir = os.path.dirname(this_file)
+        root = os.path.join(this_dir, root)
         if split == "train":
-            self.base_dir = os.path.join(root, split, "Rain13k")
+            self.base_dir = os.path.join(root, split, "Rain13K")
         else:
             self.base_dir = os.path.join(root, split, "Test100")
         self.input_dir = os.path.join(self.base_dir, "input")
@@ -36,12 +40,18 @@ class Rain13k(torch.utils.data.Dataset):
         self.transform = transform
         self.length = len(os.listdir(self.input_dir))
 
+        if split == "train":
+            self.image_ids = glob.glob(os.path.join(self.input_dir, "*.jpg"))
+        elif split == "test":
+            self.image_ids = glob.glob(os.path.join(self.input_dir, "*.png"))
+        self.image_ids = [image_id.split("/")[-1].split(".")[0] for image_id in self.image_ids]
+
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        x_path = list(glob.glob(os.path.join(self.input_dir, f"{idx+1}.*")))[0]
-        y_path = list(glob.glob(os.path.join(self.target_dir, f"{idx+1}.*")))[0]
+        x_path = list(glob.glob(os.path.join(self.input_dir, f"{self.image_ids[idx]}.*")))[0]
+        y_path = list(glob.glob(os.path.join(self.target_dir, f"{self.image_ids[idx]}.*")))[0]
         x = torchvision.io.read_image(x_path).float()
         y = torchvision.io.read_image(y_path).float()
         x = self.transform(x)
@@ -49,25 +59,25 @@ class Rain13k(torch.utils.data.Dataset):
         return x, y
 
 
-def get_dataset(batch_size=64, ds_len=45000, train_transform=None, test_transform=None, num_workers=4):
+def get_dataset(batch_size=64, train_transform=None, test_transform=None, num_workers=4):
     # Check if directory data/rain13k/train and data/rain13k/test exists
-    if not os.path.exists("data/Rain13k/train") or not os.path.exists("data/Rain13k/test"):
+    if not os.path.exists("data/Rain13K/train") or not os.path.exists("data/Rain13K/test"):
         # Make directory data/rain13k
-        os.makedirs("data/Rain13k", exist_ok=True)
-        gdown.download("https://drive.google.com/uc?id=14BidJeG4nSNuFNFDf99K-7eErCq4i47t", "data/Rain13k/train.zip")
-        gdown.download("https://drive.google.com/uc?id=1P_-RAvltEoEhfT-9GrWRdpEi6NSswTs8", "data/Rain13k/test.zip")
+        os.makedirs("data/Rain13K", exist_ok=True)
+        gdown.download("https://drive.google.com/uc?id=14BidJeG4nSNuFNFDf99K-7eErCq4i47t", "data/Rain13K/train.zip")
+        gdown.download("https://drive.google.com/uc?id=1P_-RAvltEoEhfT-9GrWRdpEi6NSswTs8", "data/Rain13K/test.zip")
         # Extract contents of train.zip and test.zip to data/rain13k
-        with zipfile.ZipFile("data/Rain13k/train.zip", "r") as zip_ref:
-            zip_ref.extractall("data/Rain13k")
-        with zipfile.ZipFile("data/Rain13k/test.zip", "r") as zip_ref:
-            zip_ref.extractall("data/Rain13k")
+        with zipfile.ZipFile("data/Rain13K/train.zip", "r") as zip_ref:
+            zip_ref.extractall("data/Rain13K")
+        with zipfile.ZipFile("data/Rain13K/test.zip", "r") as zip_ref:
+            zip_ref.extractall("data/Rain13K")
 
     # Download the dataset
-    train_dataset = Rain13k(root="data/Rain13k", split="train", transform=train_transform)
+    train_dataset = Rain13K(root="data/Rain13K", split="train", transform=train_transform)
     train_dataset, val_dataset = torch.utils.data.random_split(
         train_dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(42)
     )
-    test_dataset = Rain13k(root="data/Rain13k", split="test", transform=test_transform)
+    test_dataset = Rain13K(root="data/Rain13K", split="test", transform=test_transform)
 
     # Define the dataloaders
     train_loader = torch.utils.data.DataLoader(
@@ -182,11 +192,14 @@ class ViT:
         if not os.path.exists("runs"):
             os.makedirs("runs")
         prev_runs = [int(x.split("_")[-1]) for x in os.listdir("runs") if "ViT_" in x] + [-1]
-        self.run_id = f"ViT_{max(prev_runs) + 1:03d}"
+        self.run_id = f"ViT_{max(prev_runs) + 1:03d}" if hyperparams.get("resume_from_run") is None else hyperparams.get("resume_from_run")
         self.log_dir = f"runs/{self.run_id}"
         self.writer = SummaryWriter(log_dir=self.log_dir)
         self.best_accuracy = 0
         self.inverse_normalization = hyperparams.get("inverse_normalization", lambda x: x)
+        self.start_epoch = hyperparams.get("start_epoch", 0)
+        if hyperparams.get("resume_from_run") is not None:
+            self.model.load_state_dict(torch.load(f"{self.log_dir}/vit.pth"))
 
     def calculate_loss(self, y_hat, y):
         return (y_hat - y).pow(2).mean()
@@ -228,8 +241,6 @@ class ViT:
         accumulated_accuracy = 0
         steps_per_epoch = len(val_loader)
         for batch_idx, batch in tqdm(enumerate(val_loader), desc=f"Validation {epoch+1}", total=steps_per_epoch):
-            if batch_idx > 2:
-                break
             if device in ["cuda", "xpu", "privateuseone"]:
                 with torch.autocast(device_type=device, dtype=torch.float16):
                     imgs, labels = batch
@@ -256,8 +267,6 @@ class ViT:
     def train_epoch(self, train_loader, optimizer, scaler, epoch):
         steps_per_epoch = len(train_loader)
         for batch_idx, batch in tqdm(enumerate(train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
-            if batch_idx > 2:
-                break
             if device in ["cuda", "xpu", "privateuseone"]:
                 with torch.autocast(device_type=device, dtype=torch.float16):
                     imgs, labels = batch
@@ -289,7 +298,7 @@ class ViT:
         fused = device in ["cuda", "xpu", "privateuseone"]
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, fused=fused)
         scaler = torch.cuda.amp.GradScaler()
-        for epoch in range(n_epochs):
+        for epoch in range(self.start_epoch, n_epochs):
             self.train_epoch(train_loader, optimizer, scaler, epoch)
             with torch.no_grad():
                 self.validate(val_loader, epoch)
@@ -301,13 +310,11 @@ def divide_by_255(x):
 
 
 if __name__ == "__main__":
+
     from line_profiler import LineProfiler
 
     # Ensure that all GPU memory is released
     kill_defunct_processes()
-
-    DATASET_PATH = "data"
-    CHECKPOINT_PATH = "checkpoints"
 
     L.seed_everything(42)
 
@@ -355,12 +362,12 @@ if __name__ == "__main__":
     # }
 
     light_vit_kwargs = {
-        "embed_dim": 8,
-        "hidden_dim": 16,
-        "q_dim": 16,
-        "v_dim": 8,
-        "num_heads": 2,
-        "num_layers": 1,
+        "embed_dim": 32,
+        "hidden_dim": 64,
+        "q_dim": 64,
+        "v_dim": 32,
+        "num_heads": 4,
+        "num_layers": 4,
         "num_channels": 3,
         "num_classes": 3,
         "dropout": 0.2,
@@ -368,6 +375,8 @@ if __name__ == "__main__":
         "input_resolution": (256, 256),
         "transformer_kernel_size": 3,
         "inverse_normalization": inv_normalize,
+        "resume_from_run": "ViT_003",
+        "start_epoch": 1
     }
 
     def go():
@@ -375,14 +384,10 @@ if __name__ == "__main__":
         model_kwargs = light_vit_kwargs
 
         train_loader, val_loader, test_loader = get_dataset(
-            batch_size=1, ds_len=45000, train_transform=transform, test_transform=transform, num_workers=num_workers
+            batch_size=16, train_transform=transform, test_transform=transform, num_workers=num_workers
         )
         vit = ViT(**model_kwargs)
 
-        vit.fit(train_loader, val_loader, test_loader, n_epochs=1)
+        vit.fit(train_loader, val_loader, test_loader, n_epochs=180)
 
-    lp = LineProfiler()
-    lp.add_function(ViT.train_epoch)
-    lp_wrapper = lp(go)
-    lp_wrapper()
-    lp.print_stats()
+    go()
