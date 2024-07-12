@@ -99,7 +99,7 @@ def blah(x):
 
 
 def get_dataset(
-    ds_root="../../workspace/Rain13K.hdf5", batch_size=64, train_transform=None, test_transform=None, num_workers=4
+    ds_root="data/Rain13K.hdf5", batch_size=64, train_transform=None, test_transform=None, num_workers=4
 ):
     ds = h5py.File(ds_root, "r")
     train_ds = ds["train"]
@@ -297,8 +297,8 @@ class ViT:
         accumulated_loss /= len(self.val_loader)
         accumulated_accuracy /= len(self.val_loader)
 
-        # self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
-        # self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
+        self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
+        self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
 
         self.checkpoint(accumulated_accuracy)
 
@@ -306,8 +306,8 @@ class ViT:
         steps_per_epoch = len(self.train_loader)
         test_freq = max(1, int(steps_per_epoch * test_freq)) if test_freq > 0 else -1
         log_freq = max(1, int(steps_per_epoch * log_freq)) if log_freq > 0 else -1
-        accumulated_loss = 0
-        accumulated_accuracy = 0
+        # accumulated_loss = 0
+        # accumulated_accuracy = 0
         for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
             if batch_idx > debug_steps > 0:
                 break
@@ -338,17 +338,21 @@ class ViT:
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
 
-            accumulated_loss += loss
-            accumulated_accuracy += accuracy
 
-            if batch_idx % log_freq == 0 and log_freq > 0:
-                accumulated_loss /= log_freq
-                accumulated_accuracy /= log_freq
-                step = epoch * steps_per_epoch + batch_idx
-                self.writer.add_scalar("Loss/train", accumulated_loss, step)
-                self.writer.add_scalar("Accuracy/train", accumulated_accuracy, step)
-                accumulated_loss = 0
-                accumulated_accuracy = 0
+            step = epoch * steps_per_epoch + batch_idx
+            self.writer.add_scalar("Loss/train", loss, step)
+            self.writer.add_scalar("Accuracy/train", accuracy, step)
+
+            # accumulated_loss += loss
+            # accumulated_accuracy += accuracy
+
+            # if batch_idx % log_freq == 0 and log_freq > 0:
+            #     accumulated_loss /= log_freq
+            #     accumulated_accuracy /= log_freq
+            #     self.writer.add_scalar("Loss/train", accumulated_loss, step)
+            #     self.writer.add_scalar("Accuracy/train", accumulated_accuracy, step)
+            #     accumulated_loss = 0
+            #     accumulated_accuracy = 0
 
     def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, log_freq=0.1, debug_steps=-1):
         fused = device in ["cuda", "xpu", "privateuseone"]
@@ -385,10 +389,9 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("medium")
 
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    # device = "cpu"
     print("Device:", device)
 
-    num_workers = 0
+    num_workers = 4
 
     ds_mean = [0.49139968, 0.48215841, 0.44653091]
     ds_std = [0.24703223, 0.24348513, 0.26158784]
@@ -404,22 +407,6 @@ if __name__ == "__main__":
         x = (x.permute(0, 2, 3, 1) * torch.tensor(ds_mean).to(device) + torch.tensor(ds_std).to(device)).permute(0, 3, 1, 2)
         return x
 
-    # standard_vit_equivalent_kwargs = {
-    #     "embed_dim": 256,
-    #     "hidden_dim": 512,
-    #     "q_dim": 512,
-    #     "v_dim": 256,
-    #     "num_heads": 8,
-    #     "num_layers": 6,
-    #     "num_channels": 3,
-    #     "num_classes": 10,
-    #     "dropout": 0.2,
-    #     "patch_equivalent_mode": True,
-    #     "patch_width": 4,
-    #     "input_resolution": (32, 32),
-    #     "transformer_kernel_size": 1,
-    # }
-
     light_vit_kwargs = {
         "embed_dim": 32,
         "hidden_dim": 64,
@@ -434,25 +421,18 @@ if __name__ == "__main__":
         "input_resolution": (256, 256),
         "transformer_kernel_size": 3,
         "inverse_normalization": inv_normalize,
-        "resume_from_run": "ViT_003",
-        "start_epoch": 1,
+        "resume_from_run": "ViT_005",
+        "start_epoch": 2,
     }
 
     def go():
-        # model_kwargs = standard_vit_equivalent_kwargs
         model_kwargs = light_vit_kwargs
 
         train_loader, val_loader, test_loader = get_dataset(
-            batch_size=64, train_transform=transform, test_transform=transform, num_workers=num_workers
+            batch_size=16, train_transform=transform, test_transform=transform, num_workers=num_workers
         )
         vit = ViT(**model_kwargs)
 
-        vit.fit(train_loader, val_loader, test_loader, n_epochs=2, test_freq=-1, log_freq=-1, debug_steps=10)
+        vit.fit(train_loader, val_loader, test_loader, n_epochs=180, test_freq=0.05, log_freq=0.2)
 
-    # go()
-
-    lp = LineProfiler()
-    lp.add_function(ViT.train_epoch)
-    lp_wrapper = lp(go)
-    lp_wrapper()
-    lp.print_stats()
+    go()
