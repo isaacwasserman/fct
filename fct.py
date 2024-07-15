@@ -111,7 +111,8 @@ class TransformerBlock(torch.nn.Module):
         def sum_pool_to_resolution(x, output_resolution=3):
             # Temporarily changing interpolation mode to bilinear because of torch bug
             # a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="nearest")
-            a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="bilinear")
+            # a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="bilinear")
+            a = torch.nn.functional.adaptive_avg_pool2d(x, output_resolution)
             a = a * (output_resolution**2)
             return a
 

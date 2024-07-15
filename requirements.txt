@@ -11,3 +11,4 @@ torchvision
 gdown
 numpy < 2
 h5py
+scikit-image

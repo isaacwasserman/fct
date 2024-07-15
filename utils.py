@@ -7,6 +7,8 @@ import matplotlib.patches as patches
 from io import BytesIO
 import PIL.Image
 import cv2
+import lightning as L
+import torchvision
 
 
 def print_memory(prefix=""):
@@ -187,3 +189,69 @@ def rgb2ycbcr(im_rgb):
     im_ycbcr[:, :, 0] = (im_ycbcr[:, :, 0] * (235 - 16) + 16) / 255.0  # to [16/255, 235/255]
     im_ycbcr[:, :, 1:] = (im_ycbcr[:, :, 1:] * (240 - 16) + 16) / 255.0  # to [16/255, 240/255]
     return im_ycbcr
+
+
+def make_deterministic(seed=42):
+    L.seed_everything(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.mps.deterministic = True
+    torch.backends.mps.benchmark = False
+
+
+
+pascal_palette = categorical_palette = [
+    [0, 0, 0],        # Black
+    [230, 25, 75],    # Red
+    [60, 180, 75],    # Green
+    [255, 225, 25],   # Yellow
+    [0, 130, 200],    # Blue
+    [245, 130, 48],   # Orange
+    [145, 30, 180],   # Purple
+    [70, 240, 240],   # Cyan
+    [240, 50, 230],   # Magenta
+    [210, 245, 60],   # Lime
+    [250, 190, 190],  # Pink
+    [0, 128, 128],    # Teal
+    [230, 190, 255],  # Lavender
+    [170, 110, 40],   # Brown
+    [255, 250, 200],  # Beige
+    [128, 0, 0],      # Maroon
+    [170, 255, 195],  # Mint
+    [128, 128, 0],    # Olive
+    [255, 215, 180],  # Coral
+    [0, 0, 128],      # Navy
+    [128, 128, 128],  # Gray
+] + ([[255, 255, 255]] * 234) + [[255, 255, 255]]  # White
+
+pascal_palette = torch.tensor(pascal_palette) / 255.0
+
+
+def create_image_grid_pascal(x, y_hat, y):
+    y_hat_int = y_hat.argmax(dim=1, keepdim=False)
+    y_hat_colorized = pascal_palette[y_hat_int].permute(0, 3, 1, 2)
+    y_colorized = pascal_palette[y].permute(0, 3, 1, 2)
+    lineups = torch.cat([x.cpu(), y_hat_colorized.cpu(), y_colorized.cpu()], dim=3)
+    grid = torchvision.utils.make_grid(lineups, nrow=2)
+    return grid
+
+
+def count_classes_vectorized(labels, num_classes):
+    batch_size = labels.shape[0]
+    
+    # Flatten the labels tensor and create a batch index tensor
+    flat_labels = labels.reshape(batch_size, -1)
+    batch_index = torch.arange(batch_size, device=labels.device).unsqueeze(1).expand_as(flat_labels)
+    
+    # Create a tensor of shape (batch_size * height * width, 2)
+    # where each row is [batch_index, label]
+    index_label = torch.stack([batch_index.reshape(-1), flat_labels.reshape(-1)], dim=1)
+    
+    # Use sparse tensor to efficiently count occurrences
+    counts = torch.sparse_coo_tensor(
+        index_label.t(),
+        torch.ones(index_label.shape[0], dtype=torch.int64, device=labels.device),
+        size=(batch_size, num_classes)
+    ).to_dense()
+    
+    return counts

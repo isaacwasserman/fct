@@ -1,87 +1,45 @@
 import torch
+import torch.utils
 import torchvision
-from torchvision import transforms
 import matplotlib.pyplot as plt
 import lightning as L
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 import os
 import numpy as np
 from einops import rearrange
-from datasets import load_dataset
 from utils import *
-from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
+import gc
 from torch.utils.tensorboard import SummaryWriter
 import time
 from fct import *
+import gdown
+import zipfile
+import shutil
+import glob
+import h5py
+import warnings
+from line_profiler import LineProfiler
+from torchmetrics.classification import MulticlassAccuracy
 
-DATASET_PATH = "/workspace/data/cityscapes"
-CHECKPOINT_PATH = "checkpoints"
+def get_dataset(batch_size=64, image_transform=None, label_transform=None, num_workers=4):
+    downloaded = os.path.exists("data/VOCdevkit/VOC2012")
+    train_ds = torchvision.datasets.VOCSegmentation("data", year="2012", image_set="train", download=not downloaded, transform=image_transform, target_transform=label_transform)
+    val_ds = torchvision.datasets.VOCSegmentation("data", year="2012", image_set="val", download=not downloaded, transform=image_transform, target_transform=label_transform)
 
-L.seed_everything(42)
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-torch.backends.mps.deterministic = True
-torch.backends.mps.benchmark = False
-
-torch.set_float32_matmul_precision("medium")
-
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-print("Device:", device)
-
-num_workers = 0
-
-# dataset = load_dataset("EduardoPacheco/FoodSeg103")
-dataset = load_dataset("Chris1/cityscapes", cache_dir=DATASET_PATH)
-
-
-def dataset_transform(examples):
-    output_size = (256, 256)
-    crop_params = transforms.RandomResizedCrop.get_params(torch.ones(output_size), scale=(0.8, 1.0), ratio=(0.9, 1.1))
-    should_flip = torch.randint(0, 2, (1,)).item()
-    image_transform = transforms.Compose(
-        [
-            # lambda x: torchvision.transforms.functional.crop(x, *crop_params),
-            transforms.Resize((256, 256)),
-            transforms.RandomHorizontalFlip(should_flip),
-            transforms.ToTensor(),
-            transforms.Normalize([0.49139968, 0.48215841, 0.44653091], [0.24703223, 0.24348513, 0.26158784]),
-        ]
-    )
-    examples["image"] = [image_transform(image) for image in examples["image"]]
-    label_transform = transforms.Compose(
-        [
-            # lambda x: torchvision.transforms.functional.crop(x, *crop_params),
-            transforms.Resize((256, 256), interpolation=transforms.InterpolationMode.NEAREST),
-            transforms.RandomHorizontalFlip(should_flip),
-            lambda x: torch.tensor(np.array(x)).squeeze(0).long()[..., 0],
-        ]
-    )
-    examples["label"] = [label_transform(label) for label in examples["semantic_segmentation"]]
-    examples = {"image": examples["image"], "label": examples["label"]}
-    return examples
-
-
-dataset.set_transform(dataset_transform)
-
-
-def get_dataset(batch_size=64, ds_size=None):
-    train_set = dataset["train"]
-    val_set = dataset["validation"]
-    if ds_size is not None:
-        train_set = train_set.select(range(ds_size))
-        val_set = val_set.select(range(ds_size))
-    L.seed_everything(42)
     train_loader = torch.utils.data.DataLoader(
-        train_set, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=num_workers
+        train_ds, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=num_workers
     )
     val_loader = torch.utils.data.DataLoader(
-        val_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
+        val_ds, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
     )
-    return train_loader, val_loader
+    test_loader = torch.utils.data.DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
+    )
+    return train_loader, val_loader, test_loader
 
 
+# Define Vision Transformer
 class VisionTransformer(torch.nn.Module):
     def __init__(
         self,
@@ -98,6 +56,7 @@ class VisionTransformer(torch.nn.Module):
         patch_width=4,
         input_resolution=(32, 32),
         transformer_kernel_size=1,
+        **kwargs,
     ):
         """Vision Transformer.
 
@@ -147,7 +106,7 @@ class VisionTransformer(torch.nn.Module):
             )
         )
         self.segmentation_head = torch.nn.Sequential(
-            torch.nn.LayerNorm((embed_dim, *input_resolution)),
+            torch.nn.LayerNorm((embed_dim, *internal_resolution)),
             torch.nn.ZeroPad2d(same_padding(transformer_kernel_size)),
             torch.nn.Conv2d(embed_dim, num_classes, kernel_size=transformer_kernel_size),
         )
@@ -168,154 +127,217 @@ class VisionTransformer(torch.nn.Module):
         x = self.dropout(x)
         x = self.transformer(x)
 
-        # Segmentation
+        # Denoising
         out = self.segmentation_head(x)
         return out
-
-
-kill_defunct_processes()
 
 
 class ViT:
     def __init__(self, **hyperparams):
         super().__init__()
-        self.model = VisionTransformer(**model_kwargs).to(device)
+        self.model = VisionTransformer(**hyperparams).to(device)
         if not os.path.exists("runs"):
             os.makedirs("runs")
         prev_runs = [int(x.split("_")[-1]) for x in os.listdir("runs") if "ViT_" in x] + [-1]
-        self.run_id = f"ViT_{max(prev_runs) + 1:03d}"
+        self.run_id = (
+            f"ViT_{max(prev_runs) + 1:03d}"
+            if hyperparams.get("resume_from_run") is None
+            else hyperparams.get("resume_from_run")
+        )
         self.log_dir = f"runs/{self.run_id}"
         self.writer = SummaryWriter(log_dir=self.log_dir)
         self.best_accuracy = 0
+        self.inverse_normalization = hyperparams.get("inverse_normalization", lambda x: x)
+        self.start_epoch = hyperparams.get("start_epoch", 0)
+        if hyperparams.get("resume_from_run") is not None:
+            self.model.load_state_dict(torch.load(f"{self.log_dir}/vit.pth"))
+        self.loss_fn = hyperparams.get("loss_fn", torch.nn.CrossEntropyLoss())
+        self.accuracy_fn = hyperparams.get("accuracy_fn", torch.nn.CrossEntropyLoss())
+        self.lr = hyperparams.get("lr", 3e-4)
 
     def calculate_loss(self, y_hat, y):
-        return torch.nn.functional.cross_entropy(y_hat, y)
+        return self.loss_fn(y_hat, y)
 
     def calculate_accuracy(self, y_hat, y):
-        y_hat = y_hat.permute(0, 2, 3, 1).reshape(-1, y_hat.shape[1])
-        y = y.flatten()
-        return (y_hat.argmax(dim=1) == y).float().mean()
-
-    def calculate_miou(self, y_hat, y):
-        y_hat = y_hat.argmax(dim=1)
-        intersection = torch.logical_and(y_hat == y, y != 0).sum()
-        union = torch.logical_or(y_hat == y, y != 0).sum()
-        return intersection / union
+        return self.accuracy_fn(y_hat, y)
 
     def checkpoint(self, accuracy):
         if accuracy > self.best_accuracy:
             self.best_accuracy = accuracy
             torch.save(self.model.state_dict(), f"{self.log_dir}/vit.pth")
 
-    def visualize_batch(self, images, labels, predictions):
-        B = images.shape[0]
-        size = 15
-        fig, axs = plt.subplots(B, 3, figsize=(size, size * B / 3))
-        for i in range(B):
-            axs[i, 0].imshow(images[i].permute(1, 2, 0))
-            axs[i, 0].axes.get_xaxis().set_visible(False)
-            axs[i, 0].axes.get_yaxis().set_visible(False)
-            axs[i, 1].imshow(labels[i].squeeze())
-            axs[i, 1].axes.get_xaxis().set_visible(False)
-            axs[i, 1].axes.get_yaxis().set_visible(False)
-            axs[i, 2].imshow(predictions[i].squeeze())
-            axs[i, 2].axes.get_xaxis().set_visible(False)
-            axs[i, 2].axes.get_yaxis().set_visible(False)
-        plt.tight_layout()
-        grid_image = get_fig_as_array(fig)
-        return grid_image
+    def log_test(self, epoch, step=0, save_images=True):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with torch.no_grad():
+                imgs, targets = next(iter(self.test_loader))
+                imgs = imgs.to(device, non_blocking=True)
+                preds = self.model(imgs).cpu()
+                # Inverse normalization
+                imgs = self.inverse_normalization(imgs)
+                grid = create_image_grid_pascal(imgs, preds, targets)
+                self.writer.add_image("Test", grid, epoch)
+                t = epoch * len(self.train_loader) + step
+                self.writer.add_image("Test", grid, t)
+                if save_images:
+                    plt.imsave(f"{self.log_dir}/test_{t:06d}.png", grid.permute(1, 2, 0).numpy().clip(0, 1))
 
-    def log_test(self, test_loader, epoch):
-        with torch.no_grad():
-            batch = next(iter(test_loader))
-            imgs, labels = batch["image"], batch["label"]
-            imgs = imgs.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            preds = self.model(imgs)
-            # Inverse normalization
-            imgs = imgs.cpu() * torch.tensor([0.24703223, 0.24348513, 0.26158784]).view(1, 3, 1, 1) + torch.tensor(
-                [0.49139968, 0.48215841, 0.44653091]
-            ).view(1, 3, 1, 1)
-            predictions = preds.argmax(1).cpu()
-            labels = labels.cpu()
-            grid_image = self.visualize_batch(imgs, labels, predictions)
-            grid_image = torch.tensor(grid_image).permute(2, 0, 1)
-            self.writer.add_image("Test", grid_image, epoch)
-
-    def validate(self, val_loader, epoch):
+    def validate(self, epoch, debug_steps=-1):
         accumulated_loss = 0
         accumulated_accuracy = 0
-        accumulated_miou = 0
-        for batch in tqdm(val_loader, desc="Validation"):
+        steps_per_val = len(self.val_loader)
+        for batch_idx, batch in tqdm(enumerate(self.val_loader), desc=f"Validation {epoch+1}", total=steps_per_val):
+            if batch_idx > debug_steps > 0:
+                break
             with torch.autocast(device_type=device, dtype=torch.float16):
-                imgs, labels = batch["image"], batch["label"]
-                imgs = imgs.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
+                imgs, labels = batch
+                imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                 preds = self.model(imgs)
                 accumulated_loss += self.calculate_loss(preds, labels)
                 accumulated_accuracy += self.calculate_accuracy(preds, labels)
-                accumulated_miou += self.calculate_miou(preds, labels)
-        accumulated_loss /= len(val_loader)
-        accumulated_accuracy /= len(val_loader)
-        accumulated_miou /= len(val_loader)
+        accumulated_loss /= len(self.val_loader)
+        accumulated_accuracy /= len(self.val_loader)
 
         self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
         self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
-        self.writer.add_scalar("mIoU/val", accumulated_miou, epoch)
 
         self.checkpoint(accumulated_accuracy)
 
-    def train_epoch(self, train_loader, optimizer, scaler, epoch):
-        steps_per_epoch = len(train_loader)
-        for batch_idx, batch in tqdm(enumerate(train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
+    def train_epoch(self, optimizer, scaler, epoch, test_freq=10, log_freq=1, debug_steps=-1):
+        steps_per_epoch = len(self.train_loader)
+        for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
+            if batch_idx > debug_steps > 0:
+                break
             with torch.autocast(device_type=device, dtype=torch.float16):
-                imgs, labels = batch["image"], batch["label"]
-                imgs = imgs.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
+                imgs, labels = batch
+                imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                 preds = self.model(imgs)
                 loss = self.calculate_loss(preds, labels)
                 with torch.no_grad():
                     accuracy = self.calculate_accuracy(preds, labels)
-                    miou = self.calculate_miou(preds, labels)
+                    if batch_idx % test_freq == 0 and test_freq > 0:
+                        self.log_test(epoch, step=batch_idx)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
 
-            step = epoch * steps_per_epoch + batch_idx
-            self.writer.add_scalar("Loss/train", loss, step)
-            self.writer.add_scalar("Accuracy/train", accuracy, step)
-            self.writer.add_scalar("mIoU/train", miou, step)
+            t = epoch * steps_per_epoch + batch_idx
+            self.writer.add_scalar("Loss/train", loss, t)
+            self.writer.add_scalar("Accuracy/train", accuracy, t)
 
-    def fit(self, train_loader, val_loader, n_epochs=1):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, fused=True)
+    def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, log_freq=0.1, debug_steps=-1):
+        fused = device in ["cuda", "xpu", "privateuseone"]
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, fused=fused)
         scaler = torch.cuda.amp.GradScaler()
-        for epoch in range(n_epochs):
-            self.train_epoch(train_loader, optimizer, scaler, epoch)
-
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.test_loader = test_loader
+        for epoch in range(self.start_epoch, n_epochs):
+            self.train_epoch(optimizer, scaler, epoch, test_freq=test_freq, log_freq=log_freq, debug_steps=debug_steps)
             with torch.no_grad():
-                self.validate(val_loader, epoch)
-                self.log_test(val_loader, epoch)
+                self.validate(epoch, debug_steps=debug_steps)
+                self.log_test(epoch)
 
 
 if __name__ == "__main__":
+    kill_defunct_processes()
 
-    model_kwargs = {
-        "embed_dim": 64,
-        "hidden_dim": 128,
-        "q_dim": 128,
-        "v_dim": 64,
-        "num_heads": 8,
-        "num_layers": 3,
-        "num_channels": 3,
-        "num_classes": 34,
-        "dropout": 0.2,
-        "patch_equivalent_mode": False,
-        "input_resolution": (256, 256),
-        "transformer_kernel_size": 3,
-    }
+    torch.set_float32_matmul_precision("medium")
 
-    train_loader, val_loader = get_dataset(batch_size=8, ds_size=None)
-    vit = ViT(**model_kwargs)
-    vit.fit(train_loader, val_loader, n_epochs=180)
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    # device = "cpu"
+    print("Device:", device)
+
+    num_workers = 4
+
+    ds_mean = [0.49139968, 0.48215841, 0.44653091]
+    ds_std = [0.24703223, 0.24348513, 0.26158784]
+    image_transform = torchvision.transforms.Compose(
+        [
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((256, 256)),
+            torchvision.transforms.Normalize(ds_mean, ds_std),
+        ]
+    )
+    label_transform = torchvision.transforms.Compose(
+        [
+            torchvision.transforms.Resize((256, 256), interpolation=torchvision.transforms.InterpolationMode.NEAREST),
+            torchvision.transforms.Lambda(lambda x: torch.tensor(np.array(x)).long()),
+        ]
+    )
+
+    def inv_normalize(x):
+        x = (x.permute(0, 2, 3, 1) * torch.tensor(ds_mean).to(device) + torch.tensor(ds_std).to(device)).permute(0, 3, 1, 2)
+        return x
+
+    def differentiable_bincount(input_tensor, minlength):
+        index_tensor = input_tensor
+        source_tensor = torch.ones_like(input_tensor, device=input_tensor.device)
+        result = torch.zeros(minlength, dtype=torch.int64, device=input_tensor.device)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = torch.scatter_reduce(result, 0, index_tensor, source_tensor, reduce='sum')
+        return result
+
+    torch.autograd.set_detect_anomaly(True)
+
+    def go():
+        train_loader, val_loader, test_loader = get_dataset(
+            batch_size=16, image_transform=image_transform, label_transform=label_transform, num_workers=num_workers
+        )
+
+        class_counts = torch.zeros(21)
+        for X, Y in train_loader:
+            class_counts += torch.bincount(Y.flatten(), minlength=256)[:21]
+        class_weights = (1 / class_counts)
+        class_weights = (class_weights / class_weights.sum()).to(device)
+
+        def balanced_cross_entropy(y_hat, y):
+            # counts_batch = count_classes_vectorized(y, 256)[:, :21]
+            # weights = 1 / counts_batch
+
+            # y[y == 255] = 0
+            # counts_batch = torch.vmap(differentiable_bincount, in_dims=0)(y.flatten(1), minlength=21)
+        
+            # loss_per_image = torch.zeros(y_hat.shape[0], device=y.device)
+
+            # for i in range(y_hat.shape[0]):
+            #     loss_per_image[i] = torch.nn.functional.cross_entropy(y_hat[i].unsqueeze(0), y[i].unsqueeze(0), weight=weights[i], ignore_index=255)
+
+            # loss = loss_per_image.mean()
+            # return loss
+
+            return torch.nn.functional.cross_entropy(y_hat, y, weight=class_weights, ignore_index=255)
+
+        model_kwargs = {
+            "embed_dim": 32,
+            "hidden_dim": 64,
+            "q_dim": 64,
+            "v_dim": 32,
+            "num_heads": 4,
+            "num_layers": 4,
+            "num_channels": 3,
+            "num_classes": 21,
+            "dropout": 0.2,
+            "patch_equivalent_mode": False,
+            "input_resolution": (256, 256),
+            "transformer_kernel_size": 3,
+            "inverse_normalization": inv_normalize,
+            "loss_fn": balanced_cross_entropy,
+            "accuracy_fn": MulticlassAccuracy(21, average="micro", ignore_index=255).to(device),
+            "lr": 3e-4,
+            # "resume_from_run": "ViT_005",
+            # "start_epoch": 2,
+        }
+
+        
+
+
+
+        vit = ViT(**model_kwargs)
+
+        vit.fit(train_loader, val_loader, test_loader, n_epochs=180, test_freq=10, log_freq=1)
+
+    go()
