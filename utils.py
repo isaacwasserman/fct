@@ -199,7 +199,7 @@ def make_deterministic(seed=42):
     torch.backends.mps.benchmark = False
 
 
-pascal_palette = categorical_palette = (
+pascal_palette = (
     [
         [0, 0, 0],  # Black
         [230, 25, 75],  # Red

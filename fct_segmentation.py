@@ -161,6 +161,7 @@ class ViT:
             else hyperparams.get("resume_from_run")
         )
         self.log_dir = f"runs/{self.run_id}"
+        wandb.save(self.log_dir + "/*.pth", base_path=self.log_dir)
         self.writer = SummaryWriter(log_dir=self.log_dir)
         self.best_accuracy = 0
         self.inverse_normalization = hyperparams.get("inverse_normalization", lambda x: x)
@@ -193,9 +194,9 @@ class ViT:
                 imgs = self.inverse_normalization(imgs)
                 grid = create_image_grid_pascal(imgs, preds, targets)
                 grid = grid.permute(1, 2, 0).numpy().clip(0, 1)
-                t = epoch * len(self.train_loader) + step
-                # mlflow.log_image(grid, key="Sample Outputs", step=t)
-                wandb.log({"Sample Outputs": wandb.Image(grid)}, step=t)
+                # t = epoch * len(self.train_loader) + step
+                # wandb.log({"Sample Outputs": wandb.Image(grid)}, step=t)
+                wandb.log({"Sample Outputs": wandb.Image(grid)})
 
     def validate(self, epoch, debug_steps=-1):
         accumulated_loss = 0
@@ -215,8 +216,9 @@ class ViT:
 
         # self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
         # self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
-        t = (epoch + 1) * len(self.train_loader)
-        wandb.log({"val_accuracy": accumulated_accuracy, "val_loss": accumulated_loss}, step=t)
+        # t = (epoch + 1) * len(self.train_loader)
+        # wandb.log({"val_accuracy": accumulated_accuracy, "val_loss": accumulated_loss}, step=t)
+        wandb.log({"val_accuracy": accumulated_accuracy, "val_loss": accumulated_loss})
 
         self.checkpoint(accumulated_accuracy)
 
@@ -240,10 +242,11 @@ class ViT:
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
 
-            t = epoch * steps_per_epoch + batch_idx
+            # t = epoch * steps_per_epoch + batch_idx
             # self.writer.add_scalar("Loss/train", loss, t)
             # self.writer.add_scalar("Accuracy/train", accuracy, t)
-            wandb.log({"train_accuracy": accuracy, "train_loss": loss}, step=t)
+            # wandb.log({"train_accuracy": accuracy, "train_loss": loss}, step=t)
+            wandb.log({"train_accuracy": accuracy, "train_loss": loss})
 
     def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, log_freq=0.1, debug_steps=-1):
         fused = device in ["cuda", "xpu", "privateuseone"]
@@ -320,16 +323,16 @@ if __name__ == "__main__":
     def go():
 
         train_loader, val_loader, test_loader = get_dataset(
-            batch_size=16, image_transform=image_transform, label_transform=label_transform, num_workers=num_workers, ds_size=-1
+            batch_size=2, image_transform=image_transform, label_transform=label_transform, num_workers=num_workers, ds_size=-1
         )
 
         model_kwargs = {
-            "embed_dim": 16,
-            "hidden_dim": 32,
-            "q_dim": 32,
-            "v_dim": 16,
-            "num_heads": 1,
-            "num_layers": 4,
+            "embed_dim": 64,
+            "hidden_dim": 128,
+            "q_dim": 128,
+            "v_dim": 64,
+            "num_heads": 2,
+            "num_layers": 6,
             "num_channels": 3,
             "num_classes": 21,
             "dropout": 0.2,
@@ -339,12 +342,22 @@ if __name__ == "__main__":
             "inverse_normalization": inv_normalize,
             "loss_fn": generate_balanced_cross_entropy(train_loader),
             "accuracy_fn": MulticlassAccuracy(21, average="micro", ignore_index=255).to(device),
-            "lr": 0.0004,
+            "lr": 0.00004,
         }
 
-        wandb.init(project="fct_segmentation", config=model_kwargs)
+        should_resume = True
+        run_id = "auaz5j91" if should_resume else None
+        wandb.init(project="fct_segmentation", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
+        if should_resume:
+            best_model = wandb.restore("vit.pth", run_path=f"isaacwasserman/fct_segmentation/{run_id}")
+            vit = ViT(**model_kwargs)
+            vit.model.load_state_dict(torch.load(best_model.name))
+        else:
+            vit = ViT(**model_kwargs)
 
-        vit = ViT(**model_kwargs)
+        # # Count parameters
+        # total_params = sum(p.numel() for p in vit.model.parameters())
+        # print("Total parameters:", total_params)
 
         vit.fit(train_loader, val_loader, test_loader, n_epochs=180, test_freq=10, log_freq=1)
 
