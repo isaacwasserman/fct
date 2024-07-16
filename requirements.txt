@@ -12,3 +12,6 @@ gdown
 numpy < 2
 h5py
 scikit-image
+segmentation-models-pytorch
+positional-encodings[pytorch]
+wandb

@@ -9,23 +9,36 @@ import numpy as np
 from einops import rearrange
 from utils import *
 from tqdm.auto import tqdm
-import gc
 from torch.utils.tensorboard import SummaryWriter
-import time
 from fct import *
-import gdown
-import zipfile
-import shutil
-import glob
-import h5py
 import warnings
-from line_profiler import LineProfiler
 from torchmetrics.classification import MulticlassAccuracy
+from positional_encodings.torch_encodings import PositionalEncodingPermute2D
+import wandb
 
-def get_dataset(batch_size=64, image_transform=None, label_transform=None, num_workers=4):
+
+def get_dataset(batch_size=64, image_transform=None, label_transform=None, num_workers=4, ds_size=-1):
     downloaded = os.path.exists("data/VOCdevkit/VOC2012")
-    train_ds = torchvision.datasets.VOCSegmentation("data", year="2012", image_set="train", download=not downloaded, transform=image_transform, target_transform=label_transform)
-    val_ds = torchvision.datasets.VOCSegmentation("data", year="2012", image_set="val", download=not downloaded, transform=image_transform, target_transform=label_transform)
+    train_ds = torchvision.datasets.VOCSegmentation(
+        "data",
+        year="2012",
+        image_set="train",
+        download=not downloaded,
+        transform=image_transform,
+        target_transform=label_transform,
+    )
+    val_ds = torchvision.datasets.VOCSegmentation(
+        "data",
+        year="2012",
+        image_set="val",
+        download=not downloaded,
+        transform=image_transform,
+        target_transform=label_transform,
+    )
+
+    if ds_size > 0:
+        train_ds = torch.utils.data.Subset(train_ds, torch.arange(ds_size))
+        val_ds = torch.utils.data.Subset(val_ds, torch.arange(ds_size))
 
     train_loader = torch.utils.data.DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=num_workers
@@ -112,7 +125,8 @@ class VisionTransformer(torch.nn.Module):
         )
         self.dropout = torch.nn.Dropout(dropout)
 
-        self.positional_bias = torch.nn.Parameter(torch.randn(embed_dim, *internal_resolution))
+        self.positional_bias = torch.nn.Parameter(torch.randn((1, embed_dim, *internal_resolution)))
+        # self.positional_bias_gen = PositionalEncodingPermute2D(embed_dim)
 
     def forward(self, x):
         # Apply depthwise separable convolution embedding
@@ -120,7 +134,8 @@ class VisionTransformer(torch.nn.Module):
         B, D, H, W = x.shape
 
         # Add positional embedding
-        pos_embedding = self.positional_bias.unsqueeze(0).repeat(B, 1, 1, 1)  # (B, D, H, W)
+        pos_embedding = self.positional_bias.repeat(B, 1, 1, 1)  # (B, D, H, W)
+        # pos_embedding = self.positional_bias_gen(x)
         x = x + pos_embedding
 
         # Apply Transforrmer
@@ -136,11 +151,12 @@ class ViT:
     def __init__(self, **hyperparams):
         super().__init__()
         self.model = VisionTransformer(**hyperparams).to(device)
+        # self.model = smp.Unet(encoder_name='resnet18',classes=21,activation='softmax',encoder_weights=None).to(device)
         if not os.path.exists("runs"):
             os.makedirs("runs")
         prev_runs = [int(x.split("_")[-1]) for x in os.listdir("runs") if "ViT_" in x] + [-1]
         self.run_id = (
-            f"ViT_{max(prev_runs) + 1:03d}"
+            f"FCT_{max(prev_runs) + 1:03d}"
             if hyperparams.get("resume_from_run") is None
             else hyperparams.get("resume_from_run")
         )
@@ -154,6 +170,7 @@ class ViT:
         self.loss_fn = hyperparams.get("loss_fn", torch.nn.CrossEntropyLoss())
         self.accuracy_fn = hyperparams.get("accuracy_fn", torch.nn.CrossEntropyLoss())
         self.lr = hyperparams.get("lr", 3e-4)
+        self.hyperparams = hyperparams
 
     def calculate_loss(self, y_hat, y):
         return self.loss_fn(y_hat, y)
@@ -173,14 +190,12 @@ class ViT:
                 imgs, targets = next(iter(self.test_loader))
                 imgs = imgs.to(device, non_blocking=True)
                 preds = self.model(imgs).cpu()
-                # Inverse normalization
                 imgs = self.inverse_normalization(imgs)
                 grid = create_image_grid_pascal(imgs, preds, targets)
-                self.writer.add_image("Test", grid, epoch)
+                grid = grid.permute(1, 2, 0).numpy().clip(0, 1)
                 t = epoch * len(self.train_loader) + step
-                self.writer.add_image("Test", grid, t)
-                if save_images:
-                    plt.imsave(f"{self.log_dir}/test_{t:06d}.png", grid.permute(1, 2, 0).numpy().clip(0, 1))
+                # mlflow.log_image(grid, key="Sample Outputs", step=t)
+                wandb.log({"Sample Outputs": wandb.Image(grid)}, step=t)
 
     def validate(self, epoch, debug_steps=-1):
         accumulated_loss = 0
@@ -198,8 +213,10 @@ class ViT:
         accumulated_loss /= len(self.val_loader)
         accumulated_accuracy /= len(self.val_loader)
 
-        self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
-        self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
+        # self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
+        # self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
+        t = (epoch + 1) * len(self.train_loader)
+        wandb.log({"val_accuracy": accumulated_accuracy, "val_loss": accumulated_loss}, step=t)
 
         self.checkpoint(accumulated_accuracy)
 
@@ -224,8 +241,9 @@ class ViT:
             optimizer.zero_grad(set_to_none=True)
 
             t = epoch * steps_per_epoch + batch_idx
-            self.writer.add_scalar("Loss/train", loss, t)
-            self.writer.add_scalar("Accuracy/train", accuracy, t)
+            # self.writer.add_scalar("Loss/train", loss, t)
+            # self.writer.add_scalar("Accuracy/train", accuracy, t)
+            wandb.log({"train_accuracy": accuracy, "train_loss": loss}, step=t)
 
     def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, log_freq=0.1, debug_steps=-1):
         fused = device in ["cuda", "xpu", "privateuseone"]
@@ -249,6 +267,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     # device = "cpu"
     print("Device:", device)
+    print("Note: bias is disabled because it's exploding")
 
     num_workers = 4
 
@@ -278,45 +297,38 @@ if __name__ == "__main__":
         result = torch.zeros(minlength, dtype=torch.int64, device=input_tensor.device)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result = torch.scatter_reduce(result, 0, index_tensor, source_tensor, reduce='sum')
+            result = torch.scatter_reduce(result, 0, index_tensor, source_tensor, reduce="sum")
         return result
 
     torch.autograd.set_detect_anomaly(True)
 
-    def go():
-        train_loader, val_loader, test_loader = get_dataset(
-            batch_size=16, image_transform=image_transform, label_transform=label_transform, num_workers=num_workers
-        )
-
+    def generate_balanced_cross_entropy(train_loader):
         class_counts = torch.zeros(21)
         for X, Y in train_loader:
             class_counts += torch.bincount(Y.flatten(), minlength=256)[:21]
-        class_weights = (1 / class_counts)
-        class_weights = (class_weights / class_weights.sum()).to(device)
+        class_weights = 1 / class_counts
+        class_weights[torch.isinf(class_weights)] = 0
+        class_weights = torch.nn.functional.normalize(class_weights, p=1, dim=0).to(device)
+        class_weights[torch.isinf(class_weights)] = 0
+        class_weights[torch.isnan(class_weights)] = 0
 
         def balanced_cross_entropy(y_hat, y):
-            # counts_batch = count_classes_vectorized(y, 256)[:, :21]
-            # weights = 1 / counts_batch
-
-            # y[y == 255] = 0
-            # counts_batch = torch.vmap(differentiable_bincount, in_dims=0)(y.flatten(1), minlength=21)
-        
-            # loss_per_image = torch.zeros(y_hat.shape[0], device=y.device)
-
-            # for i in range(y_hat.shape[0]):
-            #     loss_per_image[i] = torch.nn.functional.cross_entropy(y_hat[i].unsqueeze(0), y[i].unsqueeze(0), weight=weights[i], ignore_index=255)
-
-            # loss = loss_per_image.mean()
-            # return loss
-
             return torch.nn.functional.cross_entropy(y_hat, y, weight=class_weights, ignore_index=255)
 
+        return balanced_cross_entropy
+
+    def go():
+
+        train_loader, val_loader, test_loader = get_dataset(
+            batch_size=16, image_transform=image_transform, label_transform=label_transform, num_workers=num_workers, ds_size=-1
+        )
+
         model_kwargs = {
-            "embed_dim": 32,
-            "hidden_dim": 64,
-            "q_dim": 64,
-            "v_dim": 32,
-            "num_heads": 4,
+            "embed_dim": 16,
+            "hidden_dim": 32,
+            "q_dim": 32,
+            "v_dim": 16,
+            "num_heads": 1,
             "num_layers": 4,
             "num_channels": 3,
             "num_classes": 21,
@@ -325,16 +337,12 @@ if __name__ == "__main__":
             "input_resolution": (256, 256),
             "transformer_kernel_size": 3,
             "inverse_normalization": inv_normalize,
-            "loss_fn": balanced_cross_entropy,
+            "loss_fn": generate_balanced_cross_entropy(train_loader),
             "accuracy_fn": MulticlassAccuracy(21, average="micro", ignore_index=255).to(device),
-            "lr": 3e-4,
-            # "resume_from_run": "ViT_005",
-            # "start_epoch": 2,
+            "lr": 0.0004,
         }
 
-        
-
-
+        wandb.init(project="fct_segmentation", config=model_kwargs)
 
         vit = ViT(**model_kwargs)
 
