@@ -7,6 +7,7 @@ tar -xf google-cloud-cli-linux-x86_64.tar.gz
 
 wandb login
 
-# source ~/.bashrc
-
-# gsutil cp gs://thesis_cloud_files/Rain13K.hdf5 data/Rain13K.hdf5
+# Start new session to make sure that the new PATH is sourced and run "gsutil init"
+# This is necessary because the PATH is not updated in the current shell
+exec bash
+gsutil -m rsync -r gs://thesis_cloud_files/fct_checkpoints checkpoints

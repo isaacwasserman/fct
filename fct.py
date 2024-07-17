@@ -118,6 +118,10 @@ class TransformerBlock(torch.nn.Module):
             return a
 
         KV = K.unsqueeze(2) * V.unsqueeze(1)
+        if KV.isinf().any().item():
+            print(f"KV inf: {torch.isinf(KV).any()}")
+        if KV.isnan().any().item():
+            print(f"KV nan: {torch.isnan(KV).any()}")
         assert_shape(KV, (B * h, Dq // h, Dv // h, H, W))
         KV = KV.flatten(0, 1)
         assert_shape(KV, (B * h * Dq // h, Dv // h, H, W))

@@ -15,6 +15,8 @@ import warnings
 from torchmetrics.classification import MulticlassAccuracy
 from positional_encodings.torch_encodings import PositionalEncodingPermute2D
 import wandb
+import segmentation_models_pytorch as smp
+import json
 
 
 def get_dataset(batch_size=64, image_transform=None, label_transform=None, num_workers=4, ds_size=-1):
@@ -53,7 +55,7 @@ def get_dataset(batch_size=64, image_transform=None, label_transform=None, num_w
 
 
 # Define Vision Transformer
-class VisionTransformer(torch.nn.Module):
+class FullyConvolutionalTransformer(torch.nn.Module):
     def __init__(
         self,
         embed_dim=256,
@@ -94,6 +96,12 @@ class VisionTransformer(torch.nn.Module):
             embedding_kernel_size = 1
             stride = 1
             internal_resolution = input_resolution
+        if not isinstance(transformer_kernel_size, list):
+            transformer_kernel_size = [transformer_kernel_size] * num_layers
+        elif len(transformer_kernel_size) < num_layers:
+            transformer_kernel_size = transformer_kernel_size + [transformer_kernel_size[-1]] * (
+                num_layers - len(transformer_kernel_size)
+            )
         self.input_layer_cnn = torch.nn.Sequential(
             torch.nn.ZeroPad2d(same_padding(embedding_kernel_size) if not patch_equivalent_mode else 0),
             torch.nn.Conv2d(
@@ -113,20 +121,14 @@ class VisionTransformer(torch.nn.Module):
                     dropout=dropout,
                     internal_resolution=internal_resolution,
                     block_index=block_index,
-                    kernel_size=transformer_kernel_size,
+                    kernel_size=transformer_kernel_size[block_index],
                 )
                 for block_index in range(num_layers)
             )
         )
-        self.segmentation_head = torch.nn.Sequential(
-            torch.nn.LayerNorm((embed_dim, *internal_resolution)),
-            torch.nn.ZeroPad2d(same_padding(transformer_kernel_size)),
-            torch.nn.Conv2d(embed_dim, num_classes, kernel_size=transformer_kernel_size),
-        )
         self.dropout = torch.nn.Dropout(dropout)
 
         self.positional_bias = torch.nn.Parameter(torch.randn((1, embed_dim, *internal_resolution)))
-        # self.positional_bias_gen = PositionalEncodingPermute2D(embed_dim)
 
     def forward(self, x):
         # Apply depthwise separable convolution embedding
@@ -134,44 +136,40 @@ class VisionTransformer(torch.nn.Module):
         B, D, H, W = x.shape
 
         # Add positional embedding
-        pos_embedding = self.positional_bias.repeat(B, 1, 1, 1)  # (B, D, H, W)
-        # pos_embedding = self.positional_bias_gen(x)
+        pos_embedding = self.positional_bias.repeat(B, 1, 1, 1)
         x = x + pos_embedding
 
         # Apply Transforrmer
         x = self.dropout(x)
         x = self.transformer(x)
-
-        # Denoising
-        out = self.segmentation_head(x)
-        return out
+        return x
 
 
 class ViT:
     def __init__(self, **hyperparams):
         super().__init__()
-        self.model = VisionTransformer(**hyperparams).to(device)
-        # self.model = smp.Unet(encoder_name='resnet18',classes=21,activation='softmax',encoder_weights=None).to(device)
-        if not os.path.exists("runs"):
-            os.makedirs("runs")
-        prev_runs = [int(x.split("_")[-1]) for x in os.listdir("runs") if "ViT_" in x] + [-1]
-        self.run_id = (
-            f"FCT_{max(prev_runs) + 1:03d}"
-            if hyperparams.get("resume_from_run") is None
-            else hyperparams.get("resume_from_run")
+        # Instantiate model
+        backbone = FullyConvolutionalTransformer(**hyperparams)
+        output_module = torch.nn.Sequential(
+            torch.nn.LayerNorm((hyperparams["embed_dim"], *hyperparams["input_resolution"])),
+            torch.nn.ZeroPad2d(same_padding(hyperparams["transformer_kernel_size"][-1])),
+            torch.nn.Conv2d(
+                hyperparams["embed_dim"], hyperparams["num_classes"], kernel_size=hyperparams["transformer_kernel_size"][-1]
+            ),
         )
-        self.log_dir = f"runs/{self.run_id}"
-        wandb.save(self.log_dir + "/*.pth", base_path=self.log_dir)
-        self.writer = SummaryWriter(log_dir=self.log_dir)
-        self.best_accuracy = 0
+        self.model = torch.nn.Sequential(backbone, output_module).to(device)
+
+        # Initialize member variables
         self.inverse_normalization = hyperparams.get("inverse_normalization", lambda x: x)
-        self.start_epoch = hyperparams.get("start_epoch", 0)
-        if hyperparams.get("resume_from_run") is not None:
-            self.model.load_state_dict(torch.load(f"{self.log_dir}/vit.pth"))
         self.loss_fn = hyperparams.get("loss_fn", torch.nn.CrossEntropyLoss())
         self.accuracy_fn = hyperparams.get("accuracy_fn", torch.nn.CrossEntropyLoss())
         self.lr = hyperparams.get("lr", 3e-4)
-        self.hyperparams = hyperparams
+        self.sample_output_fn = hyperparams.get("sample_output_fn", lambda x: None)
+        self.current_epoch = 0
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(), lr=self.lr, fused=device in ["cuda", "xpu", "privateuseone"]
+        )
+        self.grad_scaler = torch.cuda.amp.GradScaler()
 
     def calculate_loss(self, y_hat, y):
         return self.loss_fn(y_hat, y)
@@ -180,157 +178,149 @@ class ViT:
         return self.accuracy_fn(y_hat, y)
 
     def checkpoint(self, accuracy):
-        if accuracy > self.best_accuracy:
-            self.best_accuracy = accuracy
-            torch.save(self.model.state_dict(), f"{self.log_dir}/vit.pth")
+        """Saves the model to checkpoints directory."""
+        checkpoint_dir = f"checkpoints/{wandb.run.id}"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        torch.save(
+            {"state_dict": self.model.state_dict(), "optimizer": self.optimizer, "epoch": self.epoch},
+            f"{checkpoint_dir}/vit.pth",
+        )
 
-    def log_test(self, epoch, step=0, save_images=True):
+    def log_test(self):
+        """Generates a batch of predictions and logs them to wandb."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with torch.no_grad():
                 imgs, targets = next(iter(self.test_loader))
                 imgs = imgs.to(device, non_blocking=True)
                 preds = self.model(imgs).cpu()
-                imgs = self.inverse_normalization(imgs)
-                grid = create_image_grid_pascal(imgs, preds, targets)
-                grid = grid.permute(1, 2, 0).numpy().clip(0, 1)
-                # t = epoch * len(self.train_loader) + step
-                # wandb.log({"Sample Outputs": wandb.Image(grid)}, step=t)
-                wandb.log({"Sample Outputs": wandb.Image(grid)})
+                sample_test_outputs = self.sample_output_fn(imgs, preds, targets)
 
-    def validate(self, epoch, debug_steps=-1):
+                imgs, targets = next(iter(self.train_loader))
+                imgs = imgs.to(device, non_blocking=True)
+                preds = self.model(imgs).cpu()
+                sample_train_outputs = self.sample_output_fn(imgs, preds, targets)
+                wandb.log(
+                    {
+                        "Sample Train Outputs": wandb.Image(sample_train_outputs),
+                        "Sample Test Outputs": wandb.Image(sample_test_outputs),
+                    }
+                )
+
+    def validate(self):
         accumulated_loss = 0
         accumulated_accuracy = 0
-        steps_per_val = len(self.val_loader)
-        for batch_idx, batch in tqdm(enumerate(self.val_loader), desc=f"Validation {epoch+1}", total=steps_per_val):
-            if batch_idx > debug_steps > 0:
-                break
+        for batch_idx, batch in tqdm(enumerate(self.val_loader), desc=f"Validation {self.epoch+1}", total=len(self.val_loader)):
             with torch.autocast(device_type=device, dtype=torch.float16):
-                imgs, labels = batch
-                imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+                imgs, labels = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
                 preds = self.model(imgs)
                 accumulated_loss += self.calculate_loss(preds, labels)
                 accumulated_accuracy += self.calculate_accuracy(preds, labels)
         accumulated_loss /= len(self.val_loader)
         accumulated_accuracy /= len(self.val_loader)
-
-        # self.writer.add_scalar("Loss/val", accumulated_loss, epoch)
-        # self.writer.add_scalar("Accuracy/val", accumulated_accuracy, epoch)
-        # t = (epoch + 1) * len(self.train_loader)
-        # wandb.log({"val_accuracy": accumulated_accuracy, "val_loss": accumulated_loss}, step=t)
         wandb.log({"val_accuracy": accumulated_accuracy, "val_loss": accumulated_loss})
+        return accumulated_accuracy
 
-        self.checkpoint(accumulated_accuracy)
-
-    def train_epoch(self, optimizer, scaler, epoch, test_freq=10, log_freq=1, debug_steps=-1):
-        steps_per_epoch = len(self.train_loader)
-        for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {epoch+1}", total=steps_per_epoch):
-            if batch_idx > debug_steps > 0:
-                break
+    def train_epoch(self):
+        for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {self.epoch+1}", total=len(self.train_loader)):
             with torch.autocast(device_type=device, dtype=torch.float16):
-                imgs, labels = batch
-                imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+                imgs, labels = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
                 preds = self.model(imgs)
                 loss = self.calculate_loss(preds, labels)
                 with torch.no_grad():
                     accuracy = self.calculate_accuracy(preds, labels)
-                    if batch_idx % test_freq == 0 and test_freq > 0:
-                        self.log_test(epoch, step=batch_idx)
+                    if batch_idx % self.test_freq == 0 and self.test_freq > 0:
+                        self.log_test()
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True)
-
-            # t = epoch * steps_per_epoch + batch_idx
-            # self.writer.add_scalar("Loss/train", loss, t)
-            # self.writer.add_scalar("Accuracy/train", accuracy, t)
-            # wandb.log({"train_accuracy": accuracy, "train_loss": loss}, step=t)
+            self.grad_scaler.scale(loss).backward()
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
             wandb.log({"train_accuracy": accuracy, "train_loss": loss})
 
-    def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, log_freq=0.1, debug_steps=-1):
-        fused = device in ["cuda", "xpu", "privateuseone"]
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, fused=fused)
-        scaler = torch.cuda.amp.GradScaler()
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.test_loader = test_loader
-        for epoch in range(self.start_epoch, n_epochs):
-            self.train_epoch(optimizer, scaler, epoch, test_freq=test_freq, log_freq=log_freq, debug_steps=debug_steps)
+    def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, start_epoch=0):
+        self.train_loader, self.val_loader, self.test_loader = train_loader, val_loader, test_loader
+        self.test_freq = test_freq
+        for self.epoch in range(start_epoch, n_epochs):
+            self.train_epoch()
             with torch.no_grad():
-                self.validate(epoch, debug_steps=debug_steps)
-                self.log_test(epoch)
+                val_accuracy = self.validate()
+                self.checkpoint(val_accuracy)
+
+
+ds_mean = [0.49139968, 0.48215841, 0.44653091]
+ds_std = [0.24703223, 0.24348513, 0.26158784]
+image_transform = torchvision.transforms.Compose(
+    [
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Resize((256, 256)),
+        torchvision.transforms.Normalize(ds_mean, ds_std),
+    ]
+)
+label_transform = torchvision.transforms.Compose(
+    [
+        torchvision.transforms.Resize((256, 256), interpolation=torchvision.transforms.InterpolationMode.NEAREST),
+        torchvision.transforms.Lambda(lambda x: torch.tensor(np.array(x)).long()),
+    ]
+)
+
+
+def inv_normalize(x):
+    x = (x.permute(0, 2, 3, 1) * torch.tensor(ds_mean).to(device) + torch.tensor(ds_std).to(device)).permute(0, 3, 1, 2)
+    return x
+
+
+def differentiable_bincount(input_tensor, minlength):
+    index_tensor = input_tensor
+    source_tensor = torch.ones_like(input_tensor, device=input_tensor.device)
+    result = torch.zeros(minlength, dtype=torch.int64, device=input_tensor.device)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = torch.scatter_reduce(result, 0, index_tensor, source_tensor, reduce="sum")
+    return result
+
+
+def generate_balanced_cross_entropy(train_loader):
+    class_counts = torch.zeros(21)
+    for X, Y in train_loader:
+        class_counts += torch.bincount(Y.flatten(), minlength=256)[:21]
+    class_weights = 1 / class_counts
+    class_weights[torch.isinf(class_weights)] = 0
+    class_weights = torch.nn.functional.normalize(class_weights, p=1, dim=0).to(device)
+    class_weights[torch.isinf(class_weights)] = 0
+    class_weights[torch.isnan(class_weights)] = 0
+
+    def balanced_cross_entropy(y_hat, y):
+        return torch.nn.functional.cross_entropy(y_hat, y, weight=class_weights, ignore_index=255)
+
+    return balanced_cross_entropy
+
+
+def generate_pascal_sample_output(imgs, preds, targets):
+    imgs = inv_normalize(imgs)
+    grid = create_image_grid_pascal(imgs, preds, targets)
+    grid = grid.permute(1, 2, 0).numpy().clip(0, 1)
+    return grid
 
 
 if __name__ == "__main__":
     kill_defunct_processes()
-
     torch.set_float32_matmul_precision("medium")
-
+    torch.autograd.set_detect_anomaly(True)
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    # device = "cpu"
     print("Device:", device)
     print("Note: bias is disabled because it's exploding")
 
-    num_workers = 4
-
-    ds_mean = [0.49139968, 0.48215841, 0.44653091]
-    ds_std = [0.24703223, 0.24348513, 0.26158784]
-    image_transform = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((256, 256)),
-            torchvision.transforms.Normalize(ds_mean, ds_std),
-        ]
-    )
-    label_transform = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.Resize((256, 256), interpolation=torchvision.transforms.InterpolationMode.NEAREST),
-            torchvision.transforms.Lambda(lambda x: torch.tensor(np.array(x)).long()),
-        ]
-    )
-
-    def inv_normalize(x):
-        x = (x.permute(0, 2, 3, 1) * torch.tensor(ds_mean).to(device) + torch.tensor(ds_std).to(device)).permute(0, 3, 1, 2)
-        return x
-
-    def differentiable_bincount(input_tensor, minlength):
-        index_tensor = input_tensor
-        source_tensor = torch.ones_like(input_tensor, device=input_tensor.device)
-        result = torch.zeros(minlength, dtype=torch.int64, device=input_tensor.device)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = torch.scatter_reduce(result, 0, index_tensor, source_tensor, reduce="sum")
-        return result
-
-    torch.autograd.set_detect_anomaly(True)
-
-    def generate_balanced_cross_entropy(train_loader):
-        class_counts = torch.zeros(21)
-        for X, Y in train_loader:
-            class_counts += torch.bincount(Y.flatten(), minlength=256)[:21]
-        class_weights = 1 / class_counts
-        class_weights[torch.isinf(class_weights)] = 0
-        class_weights = torch.nn.functional.normalize(class_weights, p=1, dim=0).to(device)
-        class_weights[torch.isinf(class_weights)] = 0
-        class_weights[torch.isnan(class_weights)] = 0
-
-        def balanced_cross_entropy(y_hat, y):
-            return torch.nn.functional.cross_entropy(y_hat, y, weight=class_weights, ignore_index=255)
-
-        return balanced_cross_entropy
-
     def go():
-
         train_loader, val_loader, test_loader = get_dataset(
-            batch_size=2, image_transform=image_transform, label_transform=label_transform, num_workers=num_workers, ds_size=-1
+            batch_size=8, image_transform=image_transform, label_transform=label_transform, num_workers=4, ds_size=-1
         )
 
         model_kwargs = {
-            "embed_dim": 64,
-            "hidden_dim": 128,
-            "q_dim": 128,
-            "v_dim": 64,
+            "embed_dim": 32,
+            "hidden_dim": 64,
+            "q_dim": 64,
+            "v_dim": 32,
             "num_heads": 2,
             "num_layers": 6,
             "num_channels": 3,
@@ -338,27 +328,36 @@ if __name__ == "__main__":
             "dropout": 0.2,
             "patch_equivalent_mode": False,
             "input_resolution": (256, 256),
-            "transformer_kernel_size": 3,
+            "transformer_kernel_size": [5, 3, 1],
             "inverse_normalization": inv_normalize,
             "loss_fn": generate_balanced_cross_entropy(train_loader),
-            "accuracy_fn": MulticlassAccuracy(21, average="micro", ignore_index=255).to(device),
-            "lr": 0.00004,
+            "accuracy_fn": MulticlassAccuracy(21, average="weighted", ignore_index=255).to(device),
+            "lr": 0.00005,
+            "sample_output_fn": generate_pascal_sample_output,
         }
 
+        vit = ViT(**model_kwargs)
+
         should_resume = True
-        run_id = "auaz5j91" if should_resume else None
+        run_id = "4194toix" if should_resume else None
         wandb.init(project="fct_segmentation", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
+
+        start_epoch = 0
         if should_resume:
-            best_model = wandb.restore("vit.pth", run_path=f"isaacwasserman/fct_segmentation/{run_id}")
-            vit = ViT(**model_kwargs)
-            vit.model.load_state_dict(torch.load(best_model.name))
-        else:
-            vit = ViT(**model_kwargs)
+            checkpoint_dir = f"checkpoints/{run_id}"
+            checkpoint = torch.load(checkpoint_dir + "/vit.pth")
+            if "epoch" in checkpoint:
+                start_epoch = checkpoint["epoch"]
+                state_dict = checkpoint["state_dict"]
+                vit.optimizer = checkpoint["optimizer"]
+                vit.optimizer.add_param_group({"params": vit.model.parameters()})
+            else:
+                state_dict = checkpoint
+                with open(checkpoint_dir + "/metadata.json", "r") as f:
+                    metadata = json.load(f)
+                    start_epoch = metadata["epoch"]
+            vit.model.load_state_dict(state_dict)
 
-        # # Count parameters
-        # total_params = sum(p.numel() for p in vit.model.parameters())
-        # print("Total parameters:", total_params)
-
-        vit.fit(train_loader, val_loader, test_loader, n_epochs=180, test_freq=10, log_freq=1)
+        vit.fit(train_loader, val_loader, test_loader, n_epochs=5000, test_freq=10, start_epoch=start_epoch)
 
     go()
