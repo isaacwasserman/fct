@@ -127,7 +127,7 @@ class FullyConvolutionalTransformer(torch.nn.Module):
         x = self.input_layer_cnn(x)  # (B, D, H, W)
         B, D, H, W = x.shape
 
-        # Add positional embedding
+        # Add positional embedding (periodic augmented by learned positional bias)
         periodic_positional_encoding = self.periodic_positional_encoding(x)
         learned_positional_bias = self.learned_positional_bias.repeat(B, 1, 1, 1)
         x = x + periodic_positional_encoding + learned_positional_bias
