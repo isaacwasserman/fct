@@ -80,7 +80,7 @@ class TransformerBlock(torch.nn.Module):
         assert_shape(V, (B, Dv, H, W))
 
         # Compute softmax of Q over channel dimension
-        Q = Q - Q.max(dim=-3, keepdim=True)
+        Q = Q - Q.max(dim=-3, keepdim=True)[0]
         Q = torch.nn.functional.softmax(Q, dim=-3)
         assert_shape(Q, (B, Dq, H, W))
 

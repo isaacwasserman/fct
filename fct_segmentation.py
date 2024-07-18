@@ -253,7 +253,7 @@ if __name__ == "__main__":
 
     def go():
         train_loader, val_loader, test_loader = get_dataset(
-            batch_size=8,
+            batch_size=4,
             train_transform=train_transform,
             val_transform=val_transform,
             test_transform=test_transform,
