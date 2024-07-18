@@ -1,6 +1,7 @@
 import torch
 import torch.utils
 import torchvision
+import torchvision.transforms.v2 as transforms_v2
 import matplotlib.pyplot as plt
 import lightning as L
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -19,23 +20,13 @@ import segmentation_models_pytorch as smp
 import json
 
 
-def get_dataset(batch_size=64, image_transform=None, label_transform=None, num_workers=4, ds_size=-1):
+def get_dataset(batch_size=64, transforms=None, num_workers=4, ds_size=-1):
     downloaded = os.path.exists("data/VOCdevkit/VOC2012")
     train_ds = torchvision.datasets.VOCSegmentation(
-        "data",
-        year="2012",
-        image_set="train",
-        download=not downloaded,
-        transform=image_transform,
-        target_transform=label_transform,
+        "data", year="2012", image_set="train", download=not downloaded, transforms=transforms
     )
     val_ds = torchvision.datasets.VOCSegmentation(
-        "data",
-        year="2012",
-        image_set="val",
-        download=not downloaded,
-        transform=image_transform,
-        target_transform=label_transform,
+        "data", year="2012", image_set="val", download=not downloaded, transforms=transforms
     )
 
     if ds_size > 0:
@@ -128,7 +119,8 @@ class FullyConvolutionalTransformer(torch.nn.Module):
         )
         self.dropout = torch.nn.Dropout(dropout)
 
-        self.positional_bias = torch.nn.Parameter(torch.randn((1, embed_dim, *internal_resolution)))
+        self.learned_positional_bias = torch.nn.Parameter(torch.zeros((1, embed_dim, *internal_resolution)))
+        self.periodic_positional_encoding = PositionalEncodingPermute2D(embed_dim)
 
     def forward(self, x):
         # Apply depthwise separable convolution embedding
@@ -136,8 +128,9 @@ class FullyConvolutionalTransformer(torch.nn.Module):
         B, D, H, W = x.shape
 
         # Add positional embedding
-        pos_embedding = self.positional_bias.repeat(B, 1, 1, 1)
-        x = x + pos_embedding
+        periodic_positional_encoding = self.periodic_positional_encoding(x)
+        learned_positional_bias = self.learned_positional_bias.repeat(B, 1, 1, 1)
+        x = x + periodic_positional_encoding + learned_positional_bias
 
         # Apply Transforrmer
         x = self.dropout(x)
@@ -250,19 +243,54 @@ class ViT:
 
 ds_mean = [0.49139968, 0.48215841, 0.44653091]
 ds_std = [0.24703223, 0.24348513, 0.26158784]
-image_transform = torchvision.transforms.Compose(
-    [
-        torchvision.transforms.ToTensor(),
-        torchvision.transforms.Resize((256, 256)),
-        torchvision.transforms.Normalize(ds_mean, ds_std),
-    ]
-)
-label_transform = torchvision.transforms.Compose(
-    [
-        torchvision.transforms.Resize((256, 256), interpolation=torchvision.transforms.InterpolationMode.NEAREST),
-        torchvision.transforms.Lambda(lambda x: torch.tensor(np.array(x)).long()),
-    ]
-)
+
+
+def transform(image, target):
+    longest_side = max(image.size[0], image.size[1])
+
+    cropped_size = np.random.randint(int(0.6 * longest_side), longest_side)
+    crop_top = np.random.randint(0, longest_side - cropped_size)
+    crop_left = np.random.randint(0, longest_side - cropped_size)
+    should_flip = np.random.randint(0, 2) == 1
+
+    image = torch.from_numpy(np.array(image)) / 255
+    image = image.permute(2, 0, 1)
+    target = torch.from_numpy(np.array(target))
+    # Make square
+    image = torchvision.transforms.functional.resize(image, (longest_side, longest_side))
+    target = torchvision.transforms.functional.resize(
+        target.unsqueeze(0), (longest_side, longest_side), interpolation=torchvision.transforms.InterpolationMode.NEAREST
+    ).squeeze(0)
+    # Crop
+    image = transforms_v2.functional.resized_crop(
+        image,
+        crop_top,
+        crop_left,
+        cropped_size,
+        cropped_size,
+        (256, 256),
+        interpolation=torchvision.transforms.InterpolationMode.BILINEAR,
+    )
+    target = transforms_v2.functional.resized_crop(
+        target.unsqueeze(0),
+        crop_top,
+        crop_left,
+        cropped_size,
+        cropped_size,
+        (256, 256),
+        interpolation=torchvision.transforms.InterpolationMode.NEAREST,
+    ).squeeze(0)
+    # Flip
+    if should_flip:
+        image = transforms_v2.functional.horizontal_flip(image)
+        target = transforms_v2.functional.horizontal_flip(target)
+    # Jitter
+    image = transforms_v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)(image)
+    # Normalize
+    image = torchvision.transforms.functional.normalize(image, ds_mean, ds_std)
+    # Make integer map
+    target = torch.tensor(np.array(target)).long()
+    return image, target
 
 
 def inv_normalize(x):
@@ -312,9 +340,7 @@ if __name__ == "__main__":
     print("Note: bias is disabled because it's exploding")
 
     def go():
-        train_loader, val_loader, test_loader = get_dataset(
-            batch_size=8, image_transform=image_transform, label_transform=label_transform, num_workers=4, ds_size=-1
-        )
+        train_loader, val_loader, test_loader = get_dataset(batch_size=8, transforms=transform, num_workers=4, ds_size=-1)
 
         model_kwargs = {
             "embed_dim": 32,
