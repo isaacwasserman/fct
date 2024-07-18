@@ -1,4 +1,5 @@
 import torch
+from positional_encodings.torch_encodings import PositionalEncodingPermute2D
 from utils import *
 
 
@@ -185,4 +186,97 @@ class TransformerBlock(torch.nn.Module):
 
         x = x + self.feed_forward(x)
         assert_shape(x, (B, D, H, W))
+        return x
+
+
+# Define Vision Transformer
+class FullyConvolutionalTransformer(torch.nn.Module):
+    def __init__(
+        self,
+        embed_dim=256,
+        hidden_dim=512,
+        q_dim=512,
+        v_dim=256,
+        num_channels=3,
+        num_heads=8,
+        num_layers=6,
+        num_classes=10,
+        dropout=0.0,
+        patch_equivalent_mode=True,
+        patch_width=4,
+        input_resolution=(32, 32),
+        transformer_kernel_size=1,
+        **kwargs,
+    ):
+        """Vision Transformer.
+
+        Args:
+            embed_dim: Dimensionality of the input feature vectors to the Transformer
+            hidden_dim: Dimensionality of the hidden layer in the feed-forward networks
+                         within the Transformer
+            num_channels: Number of channels of the input (3 for RGB)
+            num_heads: Number of heads to use in the Multi-Head Attention block
+            num_layers: Number of layers to use in the Transformer
+            num_classes: Number of classes to predict
+            dropout: Amount of dropout to apply in the feed-forward network and
+                      on the input encoding
+        """
+        super().__init__()
+
+        if patch_equivalent_mode:
+            embedding_kernel_size = patch_width
+            stride = patch_width
+            internal_resolution = (input_resolution[0] // patch_width, input_resolution[1] // patch_width)
+        else:
+            embedding_kernel_size = 1
+            stride = 1
+            internal_resolution = input_resolution
+        if not isinstance(transformer_kernel_size, list):
+            transformer_kernel_size = [transformer_kernel_size] * num_layers
+        elif len(transformer_kernel_size) < num_layers:
+            transformer_kernel_size = transformer_kernel_size + [transformer_kernel_size[-1]] * (
+                num_layers - len(transformer_kernel_size)
+            )
+        self.input_layer_cnn = torch.nn.Sequential(
+            torch.nn.ZeroPad2d(same_padding(embedding_kernel_size) if not patch_equivalent_mode else 0),
+            torch.nn.Conv2d(
+                num_channels, num_channels, kernel_size=embedding_kernel_size, stride=stride, padding=0, groups=num_channels
+            ),
+            torch.nn.Conv2d(num_channels, embed_dim, kernel_size=1, stride=1, padding=0),
+            torch.nn.GELU(),
+        )
+        self.transformer = torch.nn.Sequential(
+            *(
+                TransformerBlock(
+                    embed_dim=embed_dim,
+                    hidden_dim=hidden_dim,
+                    q_dim=q_dim,
+                    v_dim=v_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                    internal_resolution=internal_resolution,
+                    block_index=block_index,
+                    kernel_size=transformer_kernel_size[block_index],
+                )
+                for block_index in range(num_layers)
+            )
+        )
+        self.dropout = torch.nn.Dropout(dropout)
+
+        self.learned_positional_bias = torch.nn.Parameter(torch.zeros((1, embed_dim, *internal_resolution)))
+        self.periodic_positional_encoding = PositionalEncodingPermute2D(embed_dim)
+
+    def forward(self, x):
+        # Apply depthwise separable convolution embedding
+        x = self.input_layer_cnn(x)  # (B, D, H, W)
+        B, D, H, W = x.shape
+
+        # Add positional embedding (periodic augmented by learned positional bias)
+        periodic_positional_encoding = self.periodic_positional_encoding(x)
+        learned_positional_bias = self.learned_positional_bias.repeat(B, 1, 1, 1)
+        x = x + periodic_positional_encoding + learned_positional_bias
+
+        # Apply Transforrmer
+        x = self.dropout(x)
+        x = self.transformer(x)
         return x
