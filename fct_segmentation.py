@@ -277,14 +277,14 @@ if __name__ == "__main__":
             "inverse_normalization": inv_normalize,
             "loss_fn": generate_balanced_cross_entropy(train_loader),
             "accuracy_fn": MulticlassAccuracy(21, average="weighted", ignore_index=255).to(device),
-            "lr": 0.00005,
+            "lr": 0.00001,
             "sample_output_fn": generate_pascal_sample_output,
         }
 
         vit = FCT_Segmentor(**model_kwargs)
 
-        should_resume = False
-        run_id = "4194toix" if should_resume else None
+        should_resume = True
+        run_id = "lp04evzx" if should_resume else None
         wandb.init(project="fct_segmentation", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
 
         start_epoch = 0
