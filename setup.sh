@@ -9,5 +9,4 @@ wandb login
 
 # Start new session to make sure that the new PATH is sourced and run "gsutil init"
 # This is necessary because the PATH is not updated in the current shell
-exec bash
 gsutil -m rsync -r gs://thesis_cloud_files/fct_checkpoints checkpoints
