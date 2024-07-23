@@ -18,7 +18,7 @@ class FC_SegformerEfficientSelfAttention(SegformerEfficientSelfAttention):
             num_heads=num_attention_heads,
             internal_resolution=(height, width),
             block_index=0,
-            kernel_size=config.kernel_size,
+            kernel_size=config.attention_kernel_size,
         )
 
     def forward(
@@ -65,14 +65,14 @@ class FC_SegformerMixFFN(nn.Module):
         self.conv1 = nn.Conv2d(
             in_features,
             hidden_features,
-            kernel_size=config.kernel_size,
-            padding=same_padding(config.kernel_size, "single"),
+            kernel_size=config.feedforward_kernel_size,
+            padding=same_padding(config.feedforward_kernel_size, "single"),
         )
         self.dwconv = nn.Conv2d(
             hidden_features,
             hidden_features,
-            kernel_size=config.kernel_size,
-            padding=same_padding(config.kernel_size, "single"),
+            kernel_size=config.feedforward_kernel_size,
+            padding=same_padding(config.feedforward_kernel_size, "single"),
             groups=hidden_features,
         )
         if isinstance(config.hidden_act, str):
@@ -82,8 +82,8 @@ class FC_SegformerMixFFN(nn.Module):
         self.conv2 = nn.Conv2d(
             hidden_features,
             out_features,
-            kernel_size=config.kernel_size,
-            padding=same_padding(config.kernel_size, "single"),
+            kernel_size=config.feedforward_kernel_size,
+            padding=same_padding(config.feedforward_kernel_size, "single"),
         )
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -226,8 +226,8 @@ class FC_SegformerMLP(nn.Module):
         self.proj = nn.Conv2d(
             input_dim,
             config.decoder_hidden_size,
-            kernel_size=config.kernel_size,
-            padding=same_padding(config.kernel_size, "single"),
+            kernel_size=config.feedforward_kernel_size,
+            padding=same_padding(config.feedforward_kernel_size, "single"),
         )
 
     def forward(self, hidden_states: torch.Tensor):
@@ -251,8 +251,8 @@ class FC_SegformerDecodeHead(nn.Module):
         self.linear_fuse = nn.Conv2d(
             in_channels=config.decoder_hidden_size * config.num_encoder_blocks,
             out_channels=config.decoder_hidden_size,
-            kernel_size=config.kernel_size,
-            padding=same_padding(config.kernel_size, "single"),
+            kernel_size=config.decoder_kernel_size,
+            padding=same_padding(config.decoder_kernel_size, "single"),
             bias=False,
         )
         self.batch_norm = nn.BatchNorm2d(config.decoder_hidden_size)
@@ -262,8 +262,8 @@ class FC_SegformerDecodeHead(nn.Module):
         self.classifier = nn.Conv2d(
             config.decoder_hidden_size,
             config.num_labels,
-            kernel_size=config.kernel_size,
-            padding=same_padding(config.kernel_size, "single"),
+            kernel_size=config.decoder_kernel_size,
+            padding=same_padding(config.decoder_kernel_size, "single"),
         )
 
         self.config = config
@@ -315,7 +315,9 @@ class FC_SegformerConfig(SegformerConfig):
     def __init__(
         self,
         input_resolution=(256, 256),
-        kernel_size=3,
+        attention_kernel_size=1,
+        feedforward_kernel_size=3,
+        decoder_kernel_size=5,
         num_channels=3,
         num_encoder_blocks=4,
         depths=[2, 2, 2, 2],
@@ -358,12 +360,16 @@ class FC_SegformerConfig(SegformerConfig):
             **kwargs,
         )
         self.input_resolution = input_resolution
-        self.kernel_size = kernel_size
+        self.attention_kernel_size = attention_kernel_size
+        self.feedforward_kernel_size = feedforward_kernel_size
+        self.decoder_kernel_size = decoder_kernel_size
 
 
 device = "mps"
 
-config = FC_SegformerConfig(num_labels=21)
+config = FC_SegformerConfig(
+    num_labels=21, input_resolution=(256, 256), attention_kernel_size=1, feedforward_kernel_size=1, decoder_kernel_size=1
+)
 model = FC_SegformerForSemanticSegmentation(config).to(device)
 
 dummy_image = torch.randn(4, 3, 256, 256).to(device)
