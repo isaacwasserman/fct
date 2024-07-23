@@ -1,11 +1,5 @@
 import os
-from transformers import (
-    SegformerForSemanticSegmentation,
-    SegformerConfig,
-    AutoConfig,
-    AutoImageProcessor,
-    AutoModelForSemanticSegmentation,
-)
+from transformers import SegformerForSemanticSegmentation, SegformerConfig
 
 from pascal_utils import PascalTrainer, get_dataset
 import wandb

@@ -140,12 +140,20 @@ def get_dataset(
     ds_size=-1,
 ):
     downloaded = os.path.exists("data/VOCdevkit/VOC2012")
-    train_ds = torchvision.datasets.VOCSegmentation(
-        "data", year="2012", image_set="train", download=not downloaded, transforms=train_transform
-    )
-    val_ds = torchvision.datasets.VOCSegmentation(
-        "data", year="2012", image_set="val", download=not downloaded, transforms=val_transform
-    )
+    try:
+        train_ds = torchvision.datasets.VOCSegmentation(
+            "data", year="2012", image_set="train", download=not downloaded, transforms=train_transform
+        )
+        val_ds = torchvision.datasets.VOCSegmentation(
+            "data", year="2012", image_set="val", download=not downloaded, transforms=val_transform
+        )
+    except RuntimeError:
+        train_ds = torchvision.datasets.VOCSegmentation(
+            "data", year="2012", image_set="train", download=True, transforms=train_transform
+        )
+        val_ds = torchvision.datasets.VOCSegmentation(
+            "data", year="2012", image_set="val", download=True, transforms=val_transform
+        )
 
     if ds_size > 0:
         train_ds = torch.utils.data.Subset(train_ds, torch.arange(ds_size))
