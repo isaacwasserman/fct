@@ -98,9 +98,7 @@ def blah(x):
 #     return train_loader, val_loader, test_loader
 
 
-def get_dataset(
-    ds_root="data/Rain13K.hdf5", batch_size=64, train_transform=None, test_transform=None, num_workers=4
-):
+def get_dataset(ds_root="data/Rain13K.hdf5", batch_size=64, train_transform=None, test_transform=None, num_workers=4):
     ds = h5py.File(ds_root, "r")
     train_ds = ds["train"]
     train_ds, val_ds = torch.utils.data.random_split(train_ds, [0.8, 0.2], generator=torch.Generator().manual_seed(42))
@@ -170,7 +168,7 @@ class VisionTransformer(torch.nn.Module):
         )
         self.transformer = torch.nn.Sequential(
             *(
-                TransformerBlock(
+                FC_TransformerBlock(
                     embed_dim=embed_dim,
                     hidden_dim=hidden_dim,
                     q_dim=q_dim,
@@ -337,7 +335,6 @@ class ViT:
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
-
 
             step = epoch * steps_per_epoch + batch_idx
             self.writer.add_scalar("Loss/train", loss, step)

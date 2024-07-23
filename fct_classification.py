@@ -88,7 +88,7 @@ class VisionTransformer(torch.nn.Module):
         )
         self.transformer = torch.nn.Sequential(
             *(
-                TransformerBlock(
+                FC_TransformerBlock(
                     embed_dim=embed_dim,
                     hidden_dim=hidden_dim,
                     q_dim=q_dim,
