@@ -12,8 +12,8 @@ class FC_Attention(torch.nn.Module):
         v_dim=256,
         num_heads=8,
         dropout=0.0,
-        internal_resolution=(32, 32),
         block_index=0,
+        internal_resolution=(32, 32),
         kernel_size=1,
     ):
         super().__init__()
@@ -26,7 +26,12 @@ class FC_Attention(torch.nn.Module):
         self.v_net = torch.nn.Conv2d(
             embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
-        self.bias_net = torch.nn.Conv2d(embed_dim, embed_dim, kernel_size=internal_resolution, padding=0, groups=embed_dim)
+        # self.bias_net = torch.nn.Conv2d(embed_dim, embed_dim, kernel_size=(internal_resolution), padding=0, groups=embed_dim)
+        self.bias_net = torch.nn.Sequential(
+            torch.nn.Conv2d(embed_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
+            torch.nn.AvgPool2d(kernel_size=internal_resolution),
+        )
+        self.bias_norm = torch.nn.LayerNorm(embed_dim)
         self.head_unification = torch.nn.Conv2d(
             v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
@@ -106,10 +111,10 @@ class FC_Attention(torch.nn.Module):
         # ---------------------------------------
 
         KV = K.unsqueeze(2) * V.unsqueeze(1)
-        if KV.isinf().any().item():
-            print(f"KV inf: {torch.isinf(KV).any()}")
-        if KV.isnan().any().item():
-            print(f"KV nan: {torch.isnan(KV).any()}")
+        if KV.flatten().isinf().any().item():
+            print(f"KV inf: {torch.isinf(KV.flatten()).any()}")
+        if KV.flatten().isnan().any().item():
+            print(f"KV nan: {torch.isnan(KV.flatten()).any()}")
         assert_shape(KV, (B * h, Dq // h, Dv // h, H, W))
         KV = KV.flatten(0, 1)
         assert_shape(KV, (B * h * Dq // h, Dv // h, H, W))
@@ -126,14 +131,15 @@ class FC_Attention(torch.nn.Module):
         Q = Q.flatten(0, 1).unsqueeze(0)
         assert_shape(Q, (1, B * h * (Dq // h), H, W))
         # TODO: FIX BIAS
-        # bias = self.bias_net(x)
-        # assert_shape(bias, (B, Dm, 1, 1))
-        # if bias.isinf().any().item():
-        #     print(f"bias inf: {torch.isinf(bias).any()}")
-        # bias = bias.flatten()
-        # assert_shape(bias, (B * h * (Dv // h),))
-        # if bias.isinf().any().item():
-        #     print(f"bias inf: {torch.isinf(bias).any()}")
+        bias = self.bias_net(x)
+        bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        assert_shape(bias, (B, Dm, 1, 1))
+        if bias.isinf().any().item():
+            print(f"bias inf: {torch.isinf(bias).any()}")
+        bias = bias.flatten()
+        assert_shape(bias, (B * h * (Dv // h),))
+        if bias.isinf().any().item():
+            print(f"bias inf: {torch.isinf(bias).any()}")
 
         # QKV is grouped (B*h groups) convolution of Q with KV
         QKV = torch.nn.functional.conv2d(Q, KV, bias=None, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
