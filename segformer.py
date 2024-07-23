@@ -12,6 +12,7 @@ import wandb
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import torch
+import json
 
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("medium")
@@ -31,6 +32,24 @@ if __name__ == "__main__":
 
     trainer = PascalTrainer(model=model, lr=0.00006)
 
-    wandb.init(project="segformer", config=configuration_dict)
+    should_resume = True
+    run_id = "2vhhtkyg" if should_resume else None
+    wandb.init(project="segformer", config=configuration_dict, id=run_id, resume="must" if should_resume else "never")
+
+    start_epoch = 0
+    if should_resume:
+        checkpoint_dir = f"checkpoints/{run_id}"
+        checkpoint = torch.load(checkpoint_dir + "/vit.pth")
+        if "epoch" in checkpoint:
+            start_epoch = checkpoint["epoch"]
+            state_dict = checkpoint["state_dict"]
+            trainer.optimizer = checkpoint["optimizer"]
+            trainer.optimizer.add_param_group({"params": trainer.model.parameters()})
+        else:
+            state_dict = checkpoint
+            with open(checkpoint_dir + "/metadata.json", "r") as f:
+                metadata = json.load(f)
+                start_epoch = metadata["epoch"]
+        trainer.model.load_state_dict(state_dict)
 
     trainer.fit(train_loader, val_loader, test_loader, n_epochs=5000, test_freq=10)
