@@ -1,5 +1,17 @@
 import os
-from segformer_arch import *
+from transformers.models.segformer.modeling_segformer import (
+    SegformerConfig,
+    SegformerDropPath,
+    SegformerEfficientSelfAttention,
+    SegformerLayer,
+    SegformerModel,
+    SegformerOverlapPatchEmbeddings,
+    SegformerSelfOutput,
+    SegformerAttention,
+    SegformerEncoder,
+)
+from transformers import SegformerForSemanticSegmentation
+import torch.nn as nn
 from fct import FC_Attention
 
 from pascal_utils import PascalTrainer, get_dataset
@@ -363,31 +375,3 @@ class FC_SegformerConfig(SegformerConfig):
         self.attention_kernel_size = attention_kernel_size
         self.feedforward_kernel_size = feedforward_kernel_size
         self.decoder_kernel_size = decoder_kernel_size
-
-
-device = "mps"
-
-config = FC_SegformerConfig(
-    num_labels=21, input_resolution=(256, 256), attention_kernel_size=1, feedforward_kernel_size=1, decoder_kernel_size=1
-)
-model = FC_SegformerForSemanticSegmentation(config).to(device)
-
-dummy_image = torch.randn(4, 3, 256, 256).to(device)
-output = model(dummy_image)
-
-
-base_segformer = SegformerForSemanticSegmentation(config).to(device)
-output_base = base_segformer(dummy_image)
-
-num_params = sum(p.numel() for p in model.parameters())
-num_params_base = sum(p.numel() for p in base_segformer.parameters())
-
-for name, param in model.named_parameters():
-    print(name, param.numel())
-
-for name, param in base_segformer.named_parameters():
-    print(name, param.numel())
-
-print(num_params, num_params_base)
-
-print(output.logits.shape, output_base.logits.shape)
