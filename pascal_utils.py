@@ -118,7 +118,7 @@ def transform(image, target, augment=True):
         image = transforms_v2.functional.horizontal_flip(image)
         target = transforms_v2.functional.horizontal_flip(target)
     # Jitter
-    image = transforms_v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)(image)
+    image = transforms_v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)(image)
     # Normalize
     image = torchvision.transforms.functional.normalize(image, ds_mean, ds_std)
     # Make integer map
