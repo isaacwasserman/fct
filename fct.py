@@ -81,13 +81,15 @@ class TransformerBlock(torch.nn.Module):
 
         # Compute softmax of Q over channel dimension
         Q = Q - Q.max(dim=-3, keepdim=True)[0]
-        Q = torch.nn.functional.softmax(Q, dim=-3)
+        Q = torch.exp(torch.nn.functional.log_softmax(Q, dim=-3))
+        # Q = torch.nn.functional.softmax(Q, dim=-3)
         assert_shape(Q, (B, Dq, H, W))
 
         # Compute softmax of K over both spatial dimensions simultaneously
         K = K.flatten(-2)
         K = K - K.max(dim=-1, keepdim=True)[0]
-        K = torch.nn.functional.softmax(K.flatten(-2), dim=-1).reshape(B, Dq, H, W)
+        K = torch.exp(torch.nn.functional.log_softmax(K.flatten(-2), dim=-1)).reshape(B, Dq, H, W)
+        # K = torch.nn.functional.softmax(K.flatten(-2), dim=-1).reshape(B, Dq, H, W)
         assert_shape(K, (B, Dq, H, W))
 
         # Break Q, K, V into heads
