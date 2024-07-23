@@ -3,6 +3,7 @@ from segformer_arch import *
 from fct import FC_Attention
 
 from pascal_utils import PascalTrainer, get_dataset
+from utils import *
 import torch
 
 
@@ -17,7 +18,7 @@ class FC_SegformerEfficientSelfAttention(SegformerEfficientSelfAttention):
             num_heads=num_attention_heads,
             internal_resolution=(height, width),
             block_index=0,
-            kernel_size=1,
+            kernel_size=config.kernel_size,
         )
 
     def forward(
@@ -61,13 +62,29 @@ class FC_SegformerMixFFN(nn.Module):
     def __init__(self, config, in_features, hidden_features=None, out_features=None):
         super().__init__()
         out_features = out_features or in_features
-        self.conv1 = nn.Conv2d(in_features, hidden_features, kernel_size=1)
-        self.dwconv = nn.Conv2d(hidden_features, hidden_features, kernel_size=3, padding=1, groups=hidden_features)
+        self.conv1 = nn.Conv2d(
+            in_features,
+            hidden_features,
+            kernel_size=config.kernel_size,
+            padding=same_padding(config.kernel_size, "single"),
+        )
+        self.dwconv = nn.Conv2d(
+            hidden_features,
+            hidden_features,
+            kernel_size=config.kernel_size,
+            padding=same_padding(config.kernel_size, "single"),
+            groups=hidden_features,
+        )
         if isinstance(config.hidden_act, str):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
             self.intermediate_act_fn = config.hidden_act
-        self.conv2 = nn.Conv2d(hidden_features, out_features, kernel_size=1)
+        self.conv2 = nn.Conv2d(
+            hidden_features,
+            out_features,
+            kernel_size=config.kernel_size,
+            padding=same_padding(config.kernel_size, "single"),
+        )
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, height, width):
@@ -206,7 +223,12 @@ class FC_SegformerModel(SegformerModel):
 class FC_SegformerMLP(nn.Module):
     def __init__(self, config: SegformerConfig, input_dim):
         super().__init__()
-        self.proj = nn.Conv2d(input_dim, config.decoder_hidden_size, kernel_size=1)
+        self.proj = nn.Conv2d(
+            input_dim,
+            config.decoder_hidden_size,
+            kernel_size=config.kernel_size,
+            padding=same_padding(config.kernel_size, "single"),
+        )
 
     def forward(self, hidden_states: torch.Tensor):
         hidden_states = self.proj(hidden_states)
@@ -229,14 +251,20 @@ class FC_SegformerDecodeHead(nn.Module):
         self.linear_fuse = nn.Conv2d(
             in_channels=config.decoder_hidden_size * config.num_encoder_blocks,
             out_channels=config.decoder_hidden_size,
-            kernel_size=1,
+            kernel_size=config.kernel_size,
+            padding=same_padding(config.kernel_size, "single"),
             bias=False,
         )
         self.batch_norm = nn.BatchNorm2d(config.decoder_hidden_size)
         self.activation = nn.ReLU()
 
         self.dropout = nn.Dropout(config.classifier_dropout_prob)
-        self.classifier = nn.Conv2d(config.decoder_hidden_size, config.num_labels, kernel_size=1)
+        self.classifier = nn.Conv2d(
+            config.decoder_hidden_size,
+            config.num_labels,
+            kernel_size=config.kernel_size,
+            padding=same_padding(config.kernel_size, "single"),
+        )
 
         self.config = config
 
@@ -287,6 +315,7 @@ class FC_SegformerConfig(SegformerConfig):
     def __init__(
         self,
         input_resolution=(256, 256),
+        kernel_size=3,
         num_channels=3,
         num_encoder_blocks=4,
         depths=[2, 2, 2, 2],
@@ -329,6 +358,7 @@ class FC_SegformerConfig(SegformerConfig):
             **kwargs,
         )
         self.input_resolution = input_resolution
+        self.kernel_size = kernel_size
 
 
 device = "mps"
