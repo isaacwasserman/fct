@@ -11,6 +11,8 @@ from transformers.models.segformer.modeling_segformer import (
     SegformerEncoder,
 )
 from transformers import SegformerForSemanticSegmentation
+from transformers.activations import ACT2FN
+
 import torch.nn as nn
 from fct import FC_Attention
 

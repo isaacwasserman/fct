@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
     def go():
         train_loader, val_loader, test_loader = pascal_utils.get_dataset(
-            batch_size=4,
+            batch_size=64,
             train_transform=pascal_utils.train_transform,
             val_transform=pascal_utils.val_transform,
             test_transform=pascal_utils.test_transform,
@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
         model_kwargs = {
             "architecture": {
-                "num_classes": 21,
+                "num_labels": 21,
                 "input_resolution": (256, 256),
             },
             "inverse_normalization": pascal_utils.inv_normalize,
@@ -42,8 +42,8 @@ if __name__ == "__main__":
 
         segmentor = FCT_Segmentor(**model_kwargs)
 
-        should_resume = False
-        run_id = "lp04evzx" if should_resume else None
+        should_resume = True
+        run_id = "q8rolglu" if should_resume else None
         wandb.init(project="fct_segformer", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
 
         start_epoch = 0
