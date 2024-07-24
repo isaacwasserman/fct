@@ -10,7 +10,7 @@ import json
 
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("medium")
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print("Device:", device)
 

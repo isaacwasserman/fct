@@ -46,7 +46,7 @@ class FC_Attention(torch.nn.Module):
     def break_into_heads(self, M):
         B, D, H, W = M.shape
         h = self.num_heads
-        return M.reshape(B, h, D // h, H, W).flatten(0, 1)
+        return M.reshape(B, h, D // h, H, W).reshape(B * h, D // h, H, W)
 
     def sum_pool_to_resolution(self, x, output_resolution=3):
         # Temporarily changing interpolation mode to bilinear because of torch bug
@@ -62,89 +62,64 @@ class FC_Attention(torch.nn.Module):
         K: (B, Dq, H, W)
         V: (B, Dv, H, W)
         """
-
         B, Dq, H, W = Q.shape
         _, Dv, _, _ = V.shape
         _, Dm, _, _ = x.shape
         h = self.num_heads
 
-        assert_shape(x, (B, Dm, H, W))
-        assert_shape(Q, (B, Dq, H, W))
-        assert_shape(K, (B, Dq, H, W))
-        assert_shape(V, (B, Dv, H, W))
+        # assert_shape(x, (B, Dm, H, W))
+        # assert_shape(Q, (B, Dq, H, W))
+        # assert_shape(K, (B, Dq, H, W))
+        # assert_shape(V, (B, Dv, H, W))
 
         # Compute softmax of Q over channel dimension
         Q = Q - Q.max(dim=-3, keepdim=True)[0]
         Q = torch.exp(torch.nn.functional.log_softmax(Q, dim=-3))
         # Q = torch.nn.functional.softmax(Q, dim=-3)
-        assert_shape(Q, (B, Dq, H, W))
+        # assert_shape(Q, (B, Dq, H, W))
 
         # Compute softmax of K over both spatial dimensions simultaneously
-        K = K.flatten(-2)
+        K = K.reshape(*K.shape[:2], -1)
         K = K - K.max(dim=-1, keepdim=True)[0]
-        K = torch.exp(torch.nn.functional.log_softmax(K.flatten(-2), dim=-1)).reshape(B, Dq, H, W)
+        K = torch.exp(torch.nn.functional.log_softmax(K.reshape(*K.shape[:2], -1), dim=-1)).reshape(B, Dq, H, W)
         # K = torch.nn.functional.softmax(K.flatten(-2), dim=-1).reshape(B, Dq, H, W)
-        assert_shape(K, (B, Dq, H, W))
+        # assert_shape(K, (B, Dq, H, W))
 
         # Break Q, K, V into heads
         Q = self.break_into_heads(Q)
-        assert_shape(Q, (B * h, Dq // h, H, W))
+        # assert_shape(Q, (B * h, Dq // h, H, W))
         K = self.break_into_heads(K)
-        assert_shape(K, (B * h, Dq // h, H, W))
+        # assert_shape(K, (B * h, Dq // h, H, W))
         V = self.break_into_heads(V)
-        assert_shape(V, (B * h, Dv // h, H, W))
-
-        # Old 1x1 KV calculation
-        # ---------------------------------------
-        # # Compute K^T @ V (kind of)
-        # # i.e. outer product of K and V, summed over spatial dimensions
-        # (Bh, Dq//h, 1, H, W) x (Bh, 1, Dv//h, H, W) -> (Bh, Dq//h, Dv//h, H, W) -> (Bh, Dq//h, Dv//h)
-        # KV = (K.unsqueeze(2) * V.unsqueeze(1)).sum(dim=[-1, -2])
-        # assert_shape(KV, (B * h, Dq // h, Dv // h))
-
-        # # Reshape KV into 2D convolutional kernels
-        # KV = KV.unsqueeze(-1).unsqueeze(-1).permute(0, 2, 1, 3, 4).flatten(0, 1)
-        # assert_shape(KV, (B * h * (Dv // h), Dq // h, 1, 1))
-        # ---------------------------------------
-
-        # New kxk KV calculation
-        # ---------------------------------------
+        # assert_shape(V, (B * h, Dv // h, H, W))
 
         KV = K.unsqueeze(2) * V.unsqueeze(1)
-        if KV.flatten().isinf().any().item():
-            print(f"KV inf: {torch.isinf(KV.flatten()).any()}")
-        if KV.flatten().isnan().any().item():
-            print(f"KV nan: {torch.isnan(KV.flatten()).any()}")
-        assert_shape(KV, (B * h, Dq // h, Dv // h, H, W))
-        KV = KV.flatten(0, 1)
-        assert_shape(KV, (B * h * Dq // h, Dv // h, H, W))
+        # assert_shape(KV, (B * h, Dq // h, Dv // h, H, W))
+        KV = KV.reshape(-1, *KV.shape[2:])
+        # assert_shape(KV, (B * h * Dq // h, Dv // h, H, W))
         KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
-        assert_shape(KV, (B * h * Dq // h, Dv // h, self.kernel_size, self.kernel_size))
+        # assert_shape(KV, (B * h * Dq // h, Dv // h, self.kernel_size, self.kernel_size))
         KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
-        assert_shape(KV, (B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size))
+        # assert_shape(KV, (B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size))
         KV = KV.permute(0, 2, 1, 3, 4)
-        assert_shape(KV, (B * h, Dv // h, Dq // h, self.kernel_size, self.kernel_size))
-        KV = KV.flatten(0, 1)
-        assert_shape(KV, (B * h * (Dv // h), Dq // h, self.kernel_size, self.kernel_size))
+        # assert_shape(KV, (B * h, Dv // h, Dq // h, self.kernel_size, self.kernel_size))
+        KV = KV.reshape(-1, *KV.shape[2:])
+        # assert_shape(KV, (B * h * (Dv // h), Dq // h, self.kernel_size, self.kernel_size))
 
         # Reshape Q into a single B * Dq channel image
-        Q = Q.flatten(0, 1).unsqueeze(0)
-        assert_shape(Q, (1, B * h * (Dq // h), H, W))
+        Q = Q.reshape(-1, *Q.shape[2:]).unsqueeze(0)
+        # assert_shape(Q, (1, B * h * (Dq // h), H, W))
         bias = self.bias_net(x)
         bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        assert_shape(bias, (B, Dv, 1, 1))
-        if bias.isinf().any().item():
-            print(f"bias inf: {torch.isinf(bias).any()}")
-        bias = bias.flatten()
-        assert_shape(bias, (B * h * (Dv // h),))
-        if bias.isinf().any().item():
-            print(f"bias inf: {torch.isinf(bias).any()}")
+        # assert_shape(bias, (B, Dv, 1, 1))
+        bias = bias.reshape(-1)
+        # assert_shape(bias, (B * h * (Dv // h),))
 
         # QKV is grouped (B*h groups) convolution of Q with KV
         QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
-        assert_shape(QKV, (1, B * h * Dv // h, H, W))
+        # assert_shape(QKV, (1, B * h * Dv // h, H, W))
         QKV = QKV.view(B, Dv, H, W)
-        assert_shape(QKV, (B, Dv, H, W))
+        # assert_shape(QKV, (B, Dv, H, W))
 
         # Unify heads
         QKV = self.head_unification(QKV)
@@ -157,7 +132,7 @@ class FC_Attention(torch.nn.Module):
         K = self.k_net(x)
         V = self.v_net(x)
         attn = self.spatial_linear_self_attention(x, Q, K, V)
-        assert_shape(attn, (B, D, H, W))
+        # assert_shape(attn, (B, D, H, W))
         return attn
 
 
@@ -233,16 +208,16 @@ class FC_TransformerBlock(torch.nn.Module):
         after_norm_1 = self.layer_norm_1(x)
 
         attn = self.attention(after_norm_1)
-        assert_shape(attn, (B, D, H, W))
+        # assert_shape(attn, (B, D, H, W))
 
         x = x + attn
-        assert_shape(x, (B, D, H, W))
+        # assert_shape(x, (B, D, H, W))
 
         x = self.layer_norm_2(x)
-        assert_shape(x, (B, D, H, W))
+        # assert_shape(x, (B, D, H, W))
 
         x = x + self.feed_forward(x)
-        assert_shape(x, (B, D, H, W))
+        # assert_shape(x, (B, D, H, W))
         return x
 
 

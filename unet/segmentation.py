@@ -15,7 +15,7 @@ class UNet_Segmentor(pascal_utils.PascalTrainer):
 
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("medium")
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
     def go():
@@ -33,8 +33,8 @@ if __name__ == "__main__":
 
         segmentor = UNet_Segmentor(**model_kwargs)
 
-        should_resume = False
-        run_id = "q8rolglu" if should_resume else None
+        should_resume = True
+        run_id = "5oydzpol" if should_resume else None
         wandb.init(project="fct_unet", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
 
         start_epoch = 0

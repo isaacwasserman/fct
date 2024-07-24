@@ -270,7 +270,7 @@ def generate_pascal_sample_output(imgs, preds, targets):
 if __name__ == "__main__":
     kill_defunct_processes()
     torch.set_float32_matmul_precision("medium")
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print("Device:", device)
     print("Note: bias is disabled because it's exploding")
