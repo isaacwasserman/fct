@@ -98,6 +98,7 @@ class UNetTransformerEncoderBlock(torch.nn.Module):
             x = torch.concat([x, feed_forward_out], dim=1)
         else:
             x = x + feed_forward_out
+        x = torch.nn.functional.gelu(x)
         return x
 
 
@@ -131,6 +132,7 @@ class UNetTransformerDecoderBlock(torch.nn.Module):
         # NOTE: Using channel max pooling to allow residual connections with channel reduction
         x_reduced = torch.nn.functional.adaptive_max_pool3d(x, (x.shape[1] // 2, x.shape[2], x.shape[3]))
         x = x_reduced + self.feed_forward(x)
+        x = torch.nn.functional.gelu(x)
         return x
 
 
