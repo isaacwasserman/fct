@@ -1,5 +1,5 @@
 apt-get update
-apt-get install tmux
+apt-get install tmux -y
 
 pip install -r requirements.txt
 curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz
