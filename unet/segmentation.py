@@ -25,7 +25,7 @@ if __name__ == "__main__":
                 "num_labels": 21,
                 "input_resolution": (256, 256),
             },
-            "loss_fn": torch.nn.CrossEntropyLoss(ignore_index=255).to(device),
+            "loss_fn": pascal_utils.generate_balanced_cross_entropy(train_loader),
             "accuracy_fn": MulticlassAccuracy(21, average="weighted", ignore_index=255).to(device),
             "lr": 0.00006,
         }
