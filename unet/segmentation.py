@@ -2,13 +2,13 @@ import torch
 from torchmetrics.classification import MulticlassAccuracy
 import wandb
 import pascal_utils
-from fc_segformer import FC_SegformerForSemanticSegmentation, FC_SegformerConfig
+from .unet import UNetForSemanticSegmentation, UNetConfig
 
 
-class FCT_Segmentor(pascal_utils.PascalTrainer):
+class UNet_Segmentor(pascal_utils.PascalTrainer):
     def __init__(self, **kwargs):
-        self.config = FC_SegformerConfig(**kwargs["architecture"])
-        self.model = FC_SegformerForSemanticSegmentation(self.config)
+        self.config = UNetConfig(**kwargs["architecture"])
+        self.model = UNetForSemanticSegmentation(self.config)
         kwargs["model"] = self.model
         super().__init__(**kwargs)
 
@@ -19,32 +19,23 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
     def go():
-        train_loader, val_loader, test_loader = pascal_utils.get_dataset(
-            batch_size=64,
-            train_transform=pascal_utils.train_transform,
-            val_transform=pascal_utils.val_transform,
-            test_transform=pascal_utils.test_transform,
-            num_workers=4,
-            ds_size=-1,
-        )
+        train_loader, val_loader, test_loader = pascal_utils.get_dataset(batch_size=4)
 
         model_kwargs = {
             "architecture": {
                 "num_labels": 21,
                 "input_resolution": (256, 256),
             },
-            "inverse_normalization": pascal_utils.inv_normalize,
-            "loss_fn": pascal_utils.generate_balanced_cross_entropy(train_loader),
+            "loss_fn": torch.nn.CrossEntropyLoss(ignore_index=255).to(device),
             "accuracy_fn": MulticlassAccuracy(21, average="weighted", ignore_index=255).to(device),
             "lr": 0.00006,
-            "sample_output_fn": pascal_utils.generate_pascal_sample_output,
         }
 
-        segmentor = FCT_Segmentor(**model_kwargs)
+        segmentor = UNet_Segmentor(**model_kwargs)
 
-        should_resume = True
+        should_resume = False
         run_id = "q8rolglu" if should_resume else None
-        wandb.init(project="fct_segformer", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
+        wandb.init(project="fct_unet", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
 
         start_epoch = 0
         if should_resume:

@@ -10,6 +10,13 @@
             "console": "integratedTerminal",
             "type": "debugpy",
             "module": "unet.unet"
+        },
+        {
+            "name": "Test unet.segmentation",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "type": "debugpy",
+            "module": "unet.segmentation"
         }
     ]
 }
