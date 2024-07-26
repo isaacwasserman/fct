@@ -16,7 +16,7 @@ from transformers.activations import ACT2FN
 import torch.nn as nn
 from fct import FC_Attention
 
-from pascal_utils import PascalTrainer, get_dataset
+from fct.segmentation_utils import SegmentationTrainer, get_dataset
 from utils import *
 import torch
 

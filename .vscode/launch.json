@@ -12,11 +12,11 @@
             "module": "unet.unet"
         },
         {
-            "name": "Test unet.segmentation",
+            "name": "Test unet.train_cub",
             "request": "launch",
             "console": "integratedTerminal",
             "type": "debugpy",
-            "module": "unet.segmentation"
+            "module": "unet.train_cub"
         }
     ]
 }

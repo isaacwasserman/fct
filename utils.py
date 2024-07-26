@@ -9,6 +9,26 @@ import PIL.Image
 import cv2
 import lightning as L
 import torchvision
+from tqdm.auto import tqdm
+
+
+class DownloadProgressBar:
+    def __init__(self, desc=None):
+        self.pbar = None
+        self.desc = desc
+
+    def __call__(self, block_num, block_size, total_size):
+        if not self.pbar:
+            self.pbar = tqdm(total=total_size, unit="B", unit_scale=True)
+            if self.desc:
+                self.pbar.set_description(self.desc)
+
+        downloaded = block_num * block_size
+        if downloaded < total_size:
+            self.pbar.update(downloaded - self.pbar.n)
+        else:
+            self.pbar.close()
+            self.pbar = None
 
 
 def print_memory(prefix=""):
@@ -197,6 +217,3 @@ def make_deterministic(seed=42):
     torch.backends.cudnn.benchmark = False
     torch.backends.mps.deterministic = True
     torch.backends.mps.benchmark = False
-
-
-

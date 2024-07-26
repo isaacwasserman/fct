@@ -1,7 +1,7 @@
 import os
 from transformers import SegformerForSemanticSegmentation, SegformerConfig
 
-from pascal_utils import PascalTrainer, get_dataset
+from fct.segmentation_utils import SegmentationTrainer, get_dataset
 import wandb
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     model = SegformerForSemanticSegmentation(configuration)
 
-    trainer = PascalTrainer(model=model, lr=0.00006)
+    trainer = SegmentationTrainer(model=model, lr=0.00006)
 
     should_resume = True
     run_id = "2vhhtkyg" if should_resume else None

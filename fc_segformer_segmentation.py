@@ -1,11 +1,11 @@
 import torch
 from torchmetrics.classification import MulticlassAccuracy
 import wandb
-import pascal_utils
+import fct.segmentation_utils as segmentation_utils
 from fc_segformer import FC_SegformerForSemanticSegmentation, FC_SegformerConfig
 
 
-class FCT_Segmentor(pascal_utils.PascalTrainer):
+class FCT_Segmentor(segmentation_utils.SegmentationTrainer):
     def __init__(self, **kwargs):
         self.config = FC_SegformerConfig(**kwargs["architecture"])
         self.model = FC_SegformerForSemanticSegmentation(self.config)
@@ -19,11 +19,11 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
     def go():
-        train_loader, val_loader, test_loader = pascal_utils.get_dataset(
+        train_loader, val_loader, test_loader = segmentation_utils.get_dataset(
             batch_size=64,
-            train_transform=pascal_utils.train_transform,
-            val_transform=pascal_utils.val_transform,
-            test_transform=pascal_utils.test_transform,
+            train_transform=segmentation_utils.train_transform,
+            val_transform=segmentation_utils.val_transform,
+            test_transform=segmentation_utils.test_transform,
             num_workers=4,
             ds_size=-1,
         )
@@ -33,11 +33,11 @@ if __name__ == "__main__":
                 "num_labels": 21,
                 "input_resolution": (256, 256),
             },
-            "inverse_normalization": pascal_utils.inv_normalize,
-            "loss_fn": pascal_utils.generate_balanced_cross_entropy(train_loader),
+            "inverse_normalization": segmentation_utils.inv_normalize,
+            "loss_fn": segmentation_utils.generate_balanced_cross_entropy(train_loader),
             "accuracy_fn": MulticlassAccuracy(21, average="weighted", ignore_index=255).to(device),
             "lr": 0.00006,
-            "sample_output_fn": pascal_utils.generate_pascal_sample_output,
+            "sample_output_fn": segmentation_utils.generate_pascal_sample_output,
         }
 
         segmentor = FCT_Segmentor(**model_kwargs)
