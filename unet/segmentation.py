@@ -32,8 +32,8 @@ if __name__ == "__main__":
 
         segmentor = UNet_Segmentor(**model_kwargs)
 
-        should_resume = False
-        run_id = "5oydzpol" if should_resume else None
+        should_resume = True
+        run_id = "nuw1htvc" if should_resume else None
         wandb.init(project="fct_unet", config=model_kwargs, id=run_id, resume="must" if should_resume else "never")
 
         start_epoch = 0
