@@ -15,6 +15,7 @@ class FC_Attention(torch.nn.Module):
         block_index=0,
         internal_resolution=(32, 32),
         kernel_size=1,
+        use_attention_bias=True,
     ):
         super().__init__()
         self.q_net = torch.nn.Conv2d(
@@ -26,14 +27,16 @@ class FC_Attention(torch.nn.Module):
         self.v_net = torch.nn.Conv2d(
             embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
-        self.bias_net = torch.nn.Sequential(
-            torch.nn.Conv2d(embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
-            torch.nn.AvgPool2d(kernel_size=internal_resolution),
-        )
-        self.bias_norm = torch.nn.LayerNorm(v_dim)
-        self.head_unification = torch.nn.Conv2d(
-            v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        )
+        if use_attention_bias:
+            self.bias_net = torch.nn.Sequential(
+                torch.nn.Conv2d(embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
+                torch.nn.AvgPool2d(kernel_size=internal_resolution),
+            )
+            self.bias_norm = torch.nn.LayerNorm(v_dim)
+        if num_heads > 1:
+            self.head_unification = torch.nn.Conv2d(
+                v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+            )
         self.num_heads = num_heads
         self.kernel_size = kernel_size
         self.hidden_dim = hidden_dim
@@ -42,6 +45,7 @@ class FC_Attention(torch.nn.Module):
         self.embed_dim = embed_dim
         self.block_index = block_index
         self.internal_resolution = internal_resolution
+        self.use_attention_bias = use_attention_bias
 
     def break_into_heads(self, M):
         B, D, H, W = M.shape
@@ -49,90 +53,63 @@ class FC_Attention(torch.nn.Module):
         return M.reshape(B, h, D // h, H, W).reshape(B * h, D // h, H, W)
 
     def sum_pool_to_resolution(self, x, output_resolution=3):
-        # Temporarily changing interpolation mode to bilinear because of torch bug
-        # a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="nearest")
+        # NOTE: Temporarily changing interpolation mode to bilinear because of torch bug
         a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="bilinear")
-        # a = torch.nn.functional.adaptive_avg_pool2d(x, output_resolution)
         a = a * (output_resolution**2)
         return a
 
-    def spatial_linear_self_attention(self, x, Q, K, V):
-        """
-        Q: (B, Dq, H, W)
-        K: (B, Dq, H, W)
-        V: (B, Dv, H, W)
-        """
+    def spatial_linear_self_attention(self, x):
+        Q = self.q_net(x)
+        K = self.k_net(x)
+        V = self.v_net(x)
+
         B, Dq, H, W = Q.shape
         _, Dv, _, _ = V.shape
         _, Dm, _, _ = x.shape
         h = self.num_heads
 
-        # assert_shape(x, (B, Dm, H, W))
-        # assert_shape(Q, (B, Dq, H, W))
-        # assert_shape(K, (B, Dq, H, W))
-        # assert_shape(V, (B, Dv, H, W))
-
         # Compute softmax of Q over channel dimension
         Q = Q - Q.max(dim=-3, keepdim=True)[0]
         Q = torch.exp(torch.nn.functional.log_softmax(Q, dim=-3))
-        # Q = torch.nn.functional.softmax(Q, dim=-3)
-        # assert_shape(Q, (B, Dq, H, W))
 
         # Compute softmax of K over both spatial dimensions simultaneously
         K = K.reshape(*K.shape[:2], -1)
         K = K - K.max(dim=-1, keepdim=True)[0]
         K = torch.exp(torch.nn.functional.log_softmax(K.reshape(*K.shape[:2], -1), dim=-1)).reshape(B, Dq, H, W)
-        # K = torch.nn.functional.softmax(K.flatten(-2), dim=-1).reshape(B, Dq, H, W)
-        # assert_shape(K, (B, Dq, H, W))
 
         # Break Q, K, V into heads
         Q = self.break_into_heads(Q)
-        # assert_shape(Q, (B * h, Dq // h, H, W))
         K = self.break_into_heads(K)
-        # assert_shape(K, (B * h, Dq // h, H, W))
         V = self.break_into_heads(V)
-        # assert_shape(V, (B * h, Dv // h, H, W))
 
         KV = K.unsqueeze(2) * V.unsqueeze(1)
-        # assert_shape(KV, (B * h, Dq // h, Dv // h, H, W))
         KV = KV.reshape(-1, *KV.shape[2:])
-        # assert_shape(KV, (B * h * Dq // h, Dv // h, H, W))
         KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
-        # assert_shape(KV, (B * h * Dq // h, Dv // h, self.kernel_size, self.kernel_size))
         KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
-        # assert_shape(KV, (B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size))
         KV = KV.permute(0, 2, 1, 3, 4)
-        # assert_shape(KV, (B * h, Dv // h, Dq // h, self.kernel_size, self.kernel_size))
         KV = KV.reshape(-1, *KV.shape[2:])
-        # assert_shape(KV, (B * h * (Dv // h), Dq // h, self.kernel_size, self.kernel_size))
 
         # Reshape Q into a single B * Dq channel image
         Q = Q.reshape(-1, *Q.shape[2:]).unsqueeze(0)
-        # assert_shape(Q, (1, B * h * (Dq // h), H, W))
-        bias = self.bias_net(x)
-        bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        # assert_shape(bias, (B, Dv, 1, 1))
-        bias = bias.reshape(-1)
-        # assert_shape(bias, (B * h * (Dv // h),))
+        bias = None
+        if self.use_attention_bias:
+            bias = self.bias_net(x)
+            bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            bias = bias.reshape(-1)
 
         # QKV is grouped (B*h groups) convolution of Q with KV
         QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
-        # assert_shape(QKV, (1, B * h * Dv // h, H, W))
         QKV = QKV.view(B, Dv, H, W)
-        # assert_shape(QKV, (B, Dv, H, W))
 
         # Unify heads
-        QKV = self.head_unification(QKV)
+        if h > 1:
+            QKV = self.head_unification(QKV)
 
         return QKV
 
     def forward(self, x):
         B, D, H, W = x.shape
-        Q = self.q_net(x)
-        K = self.k_net(x)
-        V = self.v_net(x)
-        attn = self.spatial_linear_self_attention(x, Q, K, V)
-        # assert_shape(attn, (B, D, H, W))
+        attn = self.spatial_linear_self_attention(x)
         return attn
 
 

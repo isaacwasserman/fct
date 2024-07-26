@@ -17,6 +17,7 @@ class UNetConfig:
         num_labels=21,
         input_resolution=(256, 256),
         max_channels=512,
+        use_attention_bias=False,
     ):
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
@@ -26,6 +27,7 @@ class UNetConfig:
         self.num_labels = num_labels
         self.input_resolution = input_resolution
         self.max_channels = max_channels
+        self.use_attention_bias = use_attention_bias
 
     def __call__(self, **kwargs):
         new_config = self.__dict__.copy()
@@ -79,6 +81,7 @@ class UNetTransformerEncoderBlock(torch.nn.Module):
             internal_resolution=self.input_resolution,
             block_index=block_index,
             kernel_size=self.config.attention_kernel_size,
+            use_attention_bias=self.config.use_attention_bias,
         )
         self.layer_norm_2 = torch.nn.LayerNorm((input_channels, *self.input_resolution))
         self.feed_forward = UNetFeedForward(
@@ -116,6 +119,7 @@ class UNetTransformerDecoderBlock(torch.nn.Module):
             internal_resolution=self.input_resolution,
             block_index=block_index,
             kernel_size=self.config.attention_kernel_size,
+            use_attention_bias=self.config.use_attention_bias,
         )
         self.layer_norm_2 = torch.nn.LayerNorm((input_channels, *self.input_resolution))
         self.feed_forward = UNetFeedForward(
