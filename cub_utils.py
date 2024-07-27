@@ -33,24 +33,33 @@ perceptual_mean = [0.49139968, 0.48215841, 0.44653091]
 perceptual_std = [0.24703223, 0.24348513, 0.26158784]
 
 
-def transform(image, target, augment=True):
-    longest_side = max(image.shape[0], image.shape[1])
+standard_size = 512
 
+
+def standardize_dimensions(image, target):
     image = image.astype(np.float32)
     target = target.astype(np.float32)
-
-    cropped_size = np.random.randint(int(0.6 * longest_side), longest_side)
-    crop_top = np.random.randint(0, longest_side - cropped_size)
-    crop_left = np.random.randint(0, longest_side - cropped_size)
-    should_flip = np.random.randint(0, 2) == 1
 
     image = torch.tensor(image)
     target = torch.tensor(target)
     # Make square
-    image = torchvision.transforms.functional.resize(image, (longest_side, longest_side))
+    image = torchvision.transforms.functional.resize(image, (standard_size, standard_size))
     target = torchvision.transforms.functional.resize(
-        target.unsqueeze(0), (longest_side, longest_side), interpolation=torchvision.transforms.InterpolationMode.NEAREST
+        target.unsqueeze(0), (standard_size, standard_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST
     ).squeeze(0)
+    return image, target
+
+
+def augment(image, target):
+    cropped_size = torch.randint(int(0.6 * standard_size), standard_size, (1,)).item()
+    crop_top = torch.randint(0, standard_size - cropped_size, (1,)).item()
+    crop_left = torch.randint(0, standard_size - cropped_size, (1,)).item()
+    should_flip = torch.rand(1).item() < 0.5
+    hue = torch.rand(1).item() * 0.1
+    brightness = torch.rand(1).item() * 0.2
+    contrast = torch.rand(1).item() * 0.2
+    saturation = torch.rand(1).item() * 0.2
+
     # Crop
     image = transforms_v2.functional.resized_crop(
         image,
@@ -75,16 +84,26 @@ def transform(image, target, augment=True):
         image = transforms_v2.functional.horizontal_flip(image)
         target = transforms_v2.functional.horizontal_flip(target)
     # Jitter
-    image = transforms_v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)(image)
+    image = transforms_v2.functional.adjust_hue(image, hue)
+    image = transforms_v2.functional.adjust_brightness(image, brightness)
+    image = transforms_v2.functional.adjust_contrast(image, contrast)
+    image = transforms_v2.functional.adjust_saturation(image, saturation)
     # Normalize
     image = torchvision.transforms.functional.normalize(image, perceptual_mean, perceptual_std)
 
     return image, target
 
 
-train_transform = lambda image, target: transform(image, target, augment=True)
-val_transform = lambda image, target: transform(image, target, augment=False)
-test_transform = lambda image, target: transform(image, target, augment=False)
+def transform(image, target, should_augment=True):
+    image, target = standardize_dimensions(image, target)
+    if should_augment:
+        image, target = augment(image, target)
+    return image, target
+
+
+train_transform = lambda image, target: transform(image, target, should_augment=False)
+val_transform = lambda image, target: transform(image, target, should_augment=False)
+test_transform = lambda image, target: transform(image, target, should_augment=False)
 
 
 class CUB200SegmentationDataset(torch.utils.data.Dataset):
