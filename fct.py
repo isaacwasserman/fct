@@ -3,6 +3,7 @@ from positional_encodings.torch_encodings import PositionalEncodingPermute2D
 from utils import *
 
 
+@torch.compile()
 class FC_Attention(torch.nn.Module):
     def __init__(
         self,

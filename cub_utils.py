@@ -33,7 +33,7 @@ perceptual_mean = [0.49139968, 0.48215841, 0.44653091]
 perceptual_std = [0.24703223, 0.24348513, 0.26158784]
 
 
-standard_size = 512
+standard_size = 256
 
 
 def standardize_dimensions(image, target):

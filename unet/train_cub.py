@@ -11,7 +11,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
     def go():
-        train_loader, val_loader, test_loader = cub_utils.get_dataset(batch_size=4)
+        train_loader, val_loader, test_loader = cub_utils.get_dataset(batch_size=1)
 
         model_config = UNetConfig(num_labels=1, input_resolution=(256, 256), feed_forward_kernel_size=1)
 
@@ -28,8 +28,8 @@ if __name__ == "__main__":
         model = UNetForSemanticSegmentation(model_config).to(device)
         trainer = segmentation_utils.SegmentationTrainer(model=model, config=trainer_config)
 
-        should_resume = False
-        run_id = "nuw1htvc" if should_resume else None
+        should_resume = True
+        run_id = "vab3rk2e" if should_resume else None
         wandb.init(project="fct_unet_simple_cub", config=trainer_config, id=run_id, resume="must" if should_resume else "never")
 
         start_epoch = 0
@@ -42,6 +42,6 @@ if __name__ == "__main__":
             trainer.optimizer.add_param_group({"params": trainer.model.parameters()})
             trainer.model.load_state_dict(state_dict)
 
-        trainer.fit(train_loader, val_loader, test_loader, n_epochs=5000, test_freq=10, start_epoch=start_epoch)
+        trainer.fit(train_loader, val_loader, test_loader, n_epochs=5000, test_freq=200, start_epoch=start_epoch)
 
     go()
