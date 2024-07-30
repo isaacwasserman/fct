@@ -13,7 +13,16 @@ if __name__ == "__main__":
     def go():
         train_loader, val_loader, test_loader = cub_utils.get_dataset(batch_size=1)
 
-        model_config = UNetConfig(num_labels=1, input_resolution=(256, 256), feed_forward_kernel_size=1)
+        model_config = UNetConfig(
+            num_labels=1,
+            input_resolution=(256, 256),
+            feed_forward_kernel_size=1,
+            hidden_size=256,
+            num_attention_heads=8,
+            attention_kernel_size=1,
+            max_channels=512,
+            use_attention_bias=True,
+        )
 
         trainer_config = segmentation_utils.SegmentationTrainerConfig(
             ignore_index=None,
@@ -28,7 +37,7 @@ if __name__ == "__main__":
         model = UNetForSemanticSegmentation(model_config).to(device)
         trainer = segmentation_utils.SegmentationTrainer(model=model, config=trainer_config)
 
-        should_resume = True
+        should_resume = False
         run_id = "vab3rk2e" if should_resume else None
         wandb.init(project="fct_unet_simple_cub", config=trainer_config, id=run_id, resume="must" if should_resume else "never")
 
