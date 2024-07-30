@@ -34,7 +34,7 @@ class UNetConfig:
         new_config.update(kwargs)
         return UNetConfig(**new_config)
 
-
+@torch.compile()
 class UNetFeedForward(torch.nn.Module):
     def __init__(self, config, block_index=0, padding="same", input_channels=3, output_channels=64):
         super().__init__()
@@ -64,7 +64,7 @@ class UNetFeedForward(torch.nn.Module):
         x = self.conv2(x)
         return x
 
-
+@torch.compile()
 class UNetTransformerEncoderBlock(torch.nn.Module):
     def __init__(self, config, block_index=0, input_channels=3, output_channels=64, input_resolution=None):
         super().__init__()
@@ -104,7 +104,7 @@ class UNetTransformerEncoderBlock(torch.nn.Module):
         x = torch.nn.functional.gelu(x)
         return x
 
-
+@torch.compile()
 class UNetTransformerDecoderBlock(torch.nn.Module):
     def __init__(self, config, block_index=0, input_channels=3, output_channels=64, input_resolution=None):
         super().__init__()
@@ -139,7 +139,7 @@ class UNetTransformerDecoderBlock(torch.nn.Module):
         x = torch.nn.functional.gelu(x)
         return x
 
-
+@torch.compile()
 class UNet(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -281,7 +281,7 @@ class UNet(torch.nn.Module):
 
         return decoder_3_out
 
-
+@torch.compile()
 class UNetForSemanticSegmentation(torch.nn.Module):
     def __init__(self, config):
         super().__init__()

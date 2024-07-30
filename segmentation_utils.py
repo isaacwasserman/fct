@@ -86,9 +86,10 @@ class SegmentationTrainerConfig:
             raise ValueError("sample_output_fn must be provided")
         self.model_config = model_config
 
-
-class SegmentationTrainer:
+@torch.compile()
+class SegmentationTrainer(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, config: SegmentationTrainerConfig):
+        super().__init__()
         self.config = config
         self.model = model
         self.current_epoch = 0

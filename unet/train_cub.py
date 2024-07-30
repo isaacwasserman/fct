@@ -17,11 +17,11 @@ if __name__ == "__main__":
             num_labels=1,
             input_resolution=(256, 256),
             feed_forward_kernel_size=1,
+            attention_kernel_size=3,
             hidden_size=256,
             num_attention_heads=8,
-            attention_kernel_size=1,
             max_channels=512,
-            use_attention_bias=True,
+            use_attention_bias=False,
         )
 
         trainer_config = segmentation_utils.SegmentationTrainerConfig(

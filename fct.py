@@ -170,6 +170,7 @@ class FC_Attention(torch.nn.Module):
 
 
 # Define transformer module
+@torch.compile()
 class FC_TransformerBlock(torch.nn.Module):
     def __init__(
         self,
@@ -195,19 +196,6 @@ class FC_TransformerBlock(torch.nn.Module):
         super().__init__()
 
         self.layer_norm_1 = torch.nn.LayerNorm((embed_dim, *internal_resolution))
-        # self.q_net = torch.nn.Conv2d(
-        #     embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        # )
-        # self.k_net = torch.nn.Conv2d(
-        #     embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        # )
-        # self.v_net = torch.nn.Conv2d(
-        #     embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        # )
-        # self.bias_net = torch.nn.Conv2d(embed_dim, embed_dim, kernel_size=internal_resolution, padding=0, groups=embed_dim)
-        # self.head_unification = torch.nn.Conv2d(
-        #     v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
-        # )
         self.attention = FC_Attention(
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
