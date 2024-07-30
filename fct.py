@@ -38,6 +38,9 @@ class FC_Attention(torch.nn.Module):
             self.head_unification = torch.nn.Conv2d(
                 v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
             )
+        self.dwc = torch.nn.Conv2d(
+            v_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single"), groups=v_dim
+        )
         self.num_heads = num_heads
         self.kernel_size = kernel_size
         self.hidden_dim = hidden_dim
@@ -59,7 +62,14 @@ class FC_Attention(torch.nn.Module):
         a = a * (output_resolution**2)
         return a
 
-    def spatial_linear_self_attention(self, x):
+    def phi(self, x, p=2):
+        x = torch.nn.functional.relu(x)
+        xp = x ** p
+        numerator = torch.norm(x) * xp
+        denominator = torch.norm(xp)
+        return numerator / denominator
+
+    def spatial_FLatten_attention(self, x):
         Q = self.q_net(x)
         K = self.k_net(x)
         V = self.v_net(x)
@@ -69,21 +79,14 @@ class FC_Attention(torch.nn.Module):
         _, Dm, _, _ = x.shape
         h = self.num_heads
 
-        # Compute softmax of Q over channel dimension
-        Q = Q - Q.max(dim=-3, keepdim=True)[0]
-        Q = torch.exp(torch.nn.functional.log_softmax(Q, dim=-3))
+        phi_Q = self.phi(Q)
+        phi_K = self.phi(K)
 
-        # Compute softmax of K over both spatial dimensions simultaneously
-        K = K.reshape(*K.shape[:2], -1)
-        K = K - K.max(dim=-1, keepdim=True)[0]
-        K = torch.exp(torch.nn.functional.log_softmax(K.reshape(*K.shape[:2], -1), dim=-1)).reshape(B, Dq, H, W)
-
-        # Break Q, K, V into heads
-        Q = self.break_into_heads(Q)
-        K = self.break_into_heads(K)
+        phi_Q = self.break_into_heads(phi_Q)
+        phi_K = self.break_into_heads(phi_K)
         V = self.break_into_heads(V)
 
-        KV = K.unsqueeze(2) * V.unsqueeze(1)
+        KV = phi_K.unsqueeze(2) * V.unsqueeze(1)
         KV = KV.reshape(-1, *KV.shape[2:])
         KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
         KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
@@ -91,7 +94,7 @@ class FC_Attention(torch.nn.Module):
         KV = KV.reshape(-1, *KV.shape[2:])
 
         # Reshape Q into a single B * Dq channel image
-        Q = Q.reshape(-1, *Q.shape[2:]).unsqueeze(0)
+        phi_Q = phi_Q.reshape(-1, *phi_Q.shape[2:]).unsqueeze(0)
         bias = None
         if self.use_attention_bias:
             bias = self.bias_net(x)
@@ -99,18 +102,70 @@ class FC_Attention(torch.nn.Module):
             bias = bias.reshape(-1)
 
         # QKV is grouped (B*h groups) convolution of Q with KV
-        QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
+        QKV = torch.nn.functional.conv2d(phi_Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
         QKV = QKV.view(B, Dv, H, W)
 
         # Unify heads
         if h > 1:
             QKV = self.head_unification(QKV)
 
+        QKV = QKV + self.dwc(V)
+
         return QKV
+
+    # def spatial_linear_self_attention(self, x):
+    #     Q = self.q_net(x)
+    #     K = self.k_net(x)
+    #     V = self.v_net(x)
+
+    #     B, Dq, H, W = Q.shape
+    #     _, Dv, _, _ = V.shape
+    #     _, Dm, _, _ = x.shape
+    #     h = self.num_heads
+
+    #     # Compute softmax of Q over channel dimension
+    #     Q = Q - Q.max(dim=-3, keepdim=True)[0]
+    #     Q = torch.exp(torch.nn.functional.log_softmax(Q, dim=-3))
+
+    #     # Compute softmax of K over both spatial dimensions simultaneously
+    #     K = K.reshape(*K.shape[:2], -1)
+    #     K = K - K.max(dim=-1, keepdim=True)[0]
+    #     K = torch.exp(torch.nn.functional.log_softmax(K.reshape(*K.shape[:2], -1), dim=-1)).reshape(B, Dq, H, W)
+
+    #     # Break Q, K, V into heads
+    #     Q = self.break_into_heads(Q)
+    #     K = self.break_into_heads(K)
+    #     V = self.break_into_heads(V)
+
+    #     KV = K.unsqueeze(2) * V.unsqueeze(1)
+    #     KV = KV.reshape(-1, *KV.shape[2:])
+    #     KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
+    #     KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
+    #     KV = KV.permute(0, 2, 1, 3, 4)
+    #     KV = KV.reshape(-1, *KV.shape[2:])
+
+    #     # Reshape Q into a single B * Dq channel image
+    #     Q = Q.reshape(-1, *Q.shape[2:]).unsqueeze(0)
+    #     bias = None
+    #     if self.use_attention_bias:
+    #         bias = self.bias_net(x)
+    #         bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+    #         bias = bias.reshape(-1)
+
+    #     # QKV is grouped (B*h groups) convolution of Q with KV
+    #     QKV = torch.nn.functional.conv2d(Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
+    #     QKV = QKV.view(B, Dv, H, W)
+
+    #     # Unify heads
+    #     if h > 1:
+    #         QKV = self.head_unification(QKV)
+
+    #     return QKV
 
     def forward(self, x):
         B, D, H, W = x.shape
-        attn = self.spatial_linear_self_attention(x)
+        # attn = self.spatial_linear_self_attention(x)
+        attn = self.spatial_FLatten_attention(x)
         return attn
 
 
