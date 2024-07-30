@@ -181,6 +181,8 @@ def get_dataset(
     data_dir = "/".join(root.split("/")[:-1])
     downloaded = os.path.exists(root)
     if not downloaded:
+        print("Downloading CUB-200-2011 dataset...")
+        os.makedirs(data_dir, exist_ok=True)
         urllib.request.urlretrieve(
             "https://data.caltech.edu/records/65de6-vp158/files/CUB_200_2011.tgz?download=1",
             f"{data_dir}/CUB_200_images.tgz",
@@ -191,7 +193,7 @@ def get_dataset(
             f"{data_dir}/CUB_200_segmentations.tgz",
             reporthook=DownloadProgressBar(),
         )
-        with tarfile.open(f"{data_dir}/CUB_200.tgz", "r:gz") as tar:
+        with tarfile.open(f"{data_dir}/CUB_200_images.tgz", "r:gz") as tar:
             tar.extractall(data_dir)
         shutil.move(f"{data_dir}/CUB_200_2011", root)
         with tarfile.open(f"{data_dir}/CUB_200_segmentations.tgz", "r:gz") as tar:
