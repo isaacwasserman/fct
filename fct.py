@@ -3,7 +3,7 @@ from positional_encodings.torch_encodings import PositionalEncodingPermute2D
 from utils import *
 
 
-@torch.compile()
+# @torch.compile()
 class FC_Attention(torch.nn.Module):
     def __init__(
         self,
@@ -59,7 +59,7 @@ class FC_Attention(torch.nn.Module):
     def sum_pool_to_resolution(self, x, output_resolution=3):
         # NOTE: Temporarily changing interpolation mode to bilinear because of torch bug
         a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="bilinear")
-        a = a * (output_resolution**2)
+        # a = a * (output_resolution**2)
         return a
 
     def phi(self, x, p=2):
@@ -68,6 +68,11 @@ class FC_Attention(torch.nn.Module):
         numerator = torch.norm(x) * xp
         denominator = torch.norm(xp)
         return numerator / denominator
+
+    def soft_clamp(self, tensor, min_val=-32, max_val=32):
+        range_center = (max_val + min_val) / 2
+        range_width = (max_val - min_val) / 2
+        return range_center + range_width * torch.tanh(tensor / range_width)
 
     def spatial_FLatten_attention(self, x):
         Q = self.q_net(x)
@@ -90,6 +95,8 @@ class FC_Attention(torch.nn.Module):
         KV = phi_K.unsqueeze(2) * V.unsqueeze(1)
         KV = KV.reshape(-1, *KV.shape[2:])
         KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
+        # Soft clamp to avoid infinities
+        KV = self.soft_clamp(KV)
         KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
         KV = KV.permute(0, 2, 1, 3, 4)
         KV = KV.reshape(-1, *KV.shape[2:])
@@ -106,11 +113,26 @@ class FC_Attention(torch.nn.Module):
         QKV = torch.nn.functional.conv2d(phi_Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
         QKV = QKV.view(B, Dv, H, W)
 
+        if QKV.isinf().any():
+            print("QKV has inf")
+            print(QKV)
+            raise ValueError("QKV has inf")
+
         # Unify heads
         if h > 1:
             QKV = self.head_unification(QKV)
 
+        if QKV.isinf().any():
+            print("QKV has inf")
+            print(QKV)
+            raise ValueError("QKV has inf")
+
         QKV = QKV + self.dwc(V)
+
+        if QKV.isinf().any():
+            print("QKV has inf")
+            print(QKV)
+            raise ValueError("QKV has inf")
 
         return QKV
 

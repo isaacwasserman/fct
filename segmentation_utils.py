@@ -92,7 +92,7 @@ class SegmentationTrainerConfig:
         for key, value in d.items():
             if hasattr(value, "__to_dict__"):
                 d[key] = value.__to_dict__()
-
+                
 class SegmentationTrainer(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, config: SegmentationTrainerConfig):
         super().__init__()
