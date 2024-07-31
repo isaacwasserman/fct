@@ -90,13 +90,14 @@ class FC_Attention(torch.nn.Module):
         phi_Q = self.break_into_heads(phi_Q)
         phi_K = self.break_into_heads(phi_K)
         V = self.break_into_heads(V)
-        # 
 
         KV = phi_K.unsqueeze(2) * V.unsqueeze(1)
         KV = KV.reshape(-1, *KV.shape[2:])
         KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
-        # Soft clamp to avoid infinities
-        KV = self.soft_clamp(KV)
+
+        abs_max = 32 / (self.kernel_size ** 2)
+        KV = KV.clamp(min=-abs_max, max=abs_max)
+        
         KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
         KV = KV.permute(0, 2, 1, 3, 4)
         KV = KV.reshape(-1, *KV.shape[2:])
