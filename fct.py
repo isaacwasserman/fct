@@ -85,6 +85,7 @@ class FC_Attention(torch.nn.Module):
         phi_Q = self.break_into_heads(phi_Q)
         phi_K = self.break_into_heads(phi_K)
         V = self.break_into_heads(V)
+        # 
 
         KV = phi_K.unsqueeze(2) * V.unsqueeze(1)
         KV = KV.reshape(-1, *KV.shape[2:])
