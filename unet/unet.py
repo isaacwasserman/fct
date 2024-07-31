@@ -298,7 +298,6 @@ class UNet(torch.nn.Module):
 
         return decoder_3_out
 
-# @torch.compile()
 class UNetForSemanticSegmentation(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
