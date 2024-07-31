@@ -170,7 +170,7 @@ class FC_Attention(torch.nn.Module):
 
 
 # Define transformer module
-@torch.compile()
+# @torch.compile()
 class FC_TransformerBlock(torch.nn.Module):
     def __init__(
         self,

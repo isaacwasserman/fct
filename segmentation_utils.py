@@ -86,7 +86,13 @@ class SegmentationTrainerConfig:
             raise ValueError("sample_output_fn must be provided")
         self.model_config = model_config
 
-@torch.compile()
+    def __to_dict__(self):
+        # Get default dict
+        d = self.__dict__.copy()
+        for key, value in d.items():
+            if hasattr(value, "__to_dict__"):
+                d[key] = value.__to_dict__()
+
 class SegmentationTrainer(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, config: SegmentationTrainerConfig):
         super().__init__()
