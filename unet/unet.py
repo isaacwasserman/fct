@@ -34,7 +34,7 @@ class UNetConfig:
         new_config.update(kwargs)
         return UNetConfig(**new_config)
 
-@torch.compile()
+# @torch.compile()
 class UNetFeedForward(torch.nn.Module):
     def __init__(self, config, block_index=0, padding="same", input_channels=3, output_channels=64):
         super().__init__()
@@ -64,7 +64,7 @@ class UNetFeedForward(torch.nn.Module):
         x = self.conv2(x)
         return x
 
-@torch.compile()
+# @torch.compile()
 class UNetTransformerEncoderBlock(torch.nn.Module):
     def __init__(self, config, block_index=0, input_channels=3, output_channels=64, input_resolution=None):
         super().__init__()
@@ -93,7 +93,10 @@ class UNetTransformerEncoderBlock(torch.nn.Module):
         )
 
     def forward(self, x):
-        attn = self.attention(self.layer_norm_1(x))
+        after_first_norm = self.layer_norm_1(x)
+        if after_first_norm.isnan().any().item():
+            print("NaN detected in layer norm 1")
+        attn = self.attention(after_first_norm)
         x = self.layer_norm_2(x + attn)
         # NOTE: Using skip connections instead of residual connections to accomodate changing channel depths
         feed_forward_out = self.feed_forward(x)
@@ -104,7 +107,7 @@ class UNetTransformerEncoderBlock(torch.nn.Module):
         x = torch.nn.functional.gelu(x)
         return x
 
-@torch.compile()
+# @torch.compile()
 class UNetTransformerDecoderBlock(torch.nn.Module):
     def __init__(self, config, block_index=0, input_channels=3, output_channels=64, input_resolution=None):
         super().__init__()
@@ -131,15 +134,29 @@ class UNetTransformerDecoderBlock(torch.nn.Module):
         )
 
     def forward(self, x):
-        attn = self.attention(self.layer_norm_1(x))
+        input_x = x
+        after_first_norm = self.layer_norm_1(x)
+        if after_first_norm.isnan().any().item():
+            print("NaN detected in layer norm 1")
+        attn = self.attention(after_first_norm)
+        if attn.isnan().any().item():
+            print("NaN detected in attn")
         x = self.layer_norm_2(x + attn)
+        if x.isnan().any().item():
+            print("NaN detected in x")
         # NOTE: Using channel max pooling to allow residual connections with channel reduction
         x_reduced = torch.nn.functional.adaptive_max_pool3d(x, (x.shape[1] // 2, x.shape[2], x.shape[3]))
+        if x_reduced.isnan().any().item():
+            print("NaN detected in x_reduced")
         x = x_reduced + self.feed_forward(x)
+        if x.isnan().any().item():
+            print("NaN detected in x")
         x = torch.nn.functional.gelu(x)
+        if x.isnan().any().item():
+            print("NaN detected in x")
         return x
 
-@torch.compile()
+# @torch.compile()
 class UNet(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -281,7 +298,7 @@ class UNet(torch.nn.Module):
 
         return decoder_3_out
 
-@torch.compile()
+# @torch.compile()
 class UNetForSemanticSegmentation(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
