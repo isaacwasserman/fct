@@ -16,7 +16,7 @@ if __name__ == "__main__":
         model_config = UNetConfig(
             num_labels=1,
             input_resolution=(256, 256),
-            feed_forward_kernel_size=1,
+            feed_forward_kernel_size=3,
             attention_kernel_size=3,
             hidden_size=256,
             num_attention_heads=8,

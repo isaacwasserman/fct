@@ -71,6 +71,7 @@ class SegmentationTrainerConfig:
         lr=3e-4,
         sample_output_fn=None,
         model_config=None,
+        min_test_images=4,
     ):
         self.device = device
         self.ignore_index = ignore_index
@@ -82,6 +83,7 @@ class SegmentationTrainerConfig:
         self.loss_fn = loss_fn if loss_fn else torch.nn.CrossEntropyLoss(ignore_index=ignore_index)
         self.lr = lr
         self.sample_output_fn = sample_output_fn
+        self.min_test_images = min_test_images
         if self.sample_output_fn is None:
             raise ValueError("sample_output_fn must be provided")
         self.model_config = model_config
@@ -133,15 +135,25 @@ class SegmentationTrainer(torch.nn.Module):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with torch.no_grad():
-                imgs, targets = next(iter(self.test_loader))
-                imgs = imgs.to(device, non_blocking=True)
-                preds = self.forward(imgs).cpu()
-                sample_test_outputs = self.config.sample_output_fn(imgs, preds, targets)
-
-                imgs, targets = next(iter(self.train_loader))
-                imgs = imgs.to(device, non_blocking=True)
-                preds = self.forward(imgs).cpu()
+                train_trios = []
+                for imgs, targets in self.repeatable_samples["train"]:
+                    imgs = imgs.to(device, non_blocking=True)
+                    preds = self.forward(imgs).cpu()
+                    train_trios.append((imgs, preds, targets))
+                imgs = torch.cat([trio[0] for trio in train_trios], dim=0)
+                preds = torch.cat([trio[1] for trio in train_trios], dim=0)
+                targets = torch.cat([trio[2] for trio in train_trios], dim=0)
                 sample_train_outputs = self.config.sample_output_fn(imgs, preds, targets)
+
+                val_trios = []
+                for imgs, targets in self.repeatable_samples["val"]:
+                    imgs = imgs.to(device, non_blocking=True)
+                    preds = self.forward(imgs).cpu()
+                    val_trios.append((imgs, preds, targets))
+                imgs = torch.cat([trio[0] for trio in val_trios], dim=0)
+                preds = torch.cat([trio[1] for trio in val_trios], dim=0)
+                targets = torch.cat([trio[2] for trio in val_trios], dim=0)
+                sample_test_outputs = self.config.sample_output_fn(imgs, preds, targets)
                 wandb.log(
                     {
                         "Sample Train Outputs": wandb.Image(sample_train_outputs),
@@ -180,8 +192,20 @@ class SegmentationTrainer(torch.nn.Module):
             self.optimizer.zero_grad(set_to_none=True)
             wandb.log({"train_accuracy": accuracy, "train_loss": loss})
 
+    def cache_repeatable_samples(self):
+        repeatable_train_sample_indices = np.linspace(0, len(self.train_loader.dataset), self.config.min_test_images, endpoint=False, dtype=int)
+        repeatable_val_sample_indices = np.linspace(0, len(self.val_loader.dataset), self.config.min_test_images, endpoint=False, dtype=int)
+        repeatable_train_sample = torch.utils.data.Subset(self.train_loader.dataset, repeatable_train_sample_indices)
+        repeatable_val_sample = torch.utils.data.Subset(self.val_loader.dataset, repeatable_val_sample_indices)
+        self.repeatable_samples = {
+            "train": torch.utils.data.DataLoader(repeatable_train_sample, batch_size=self.config.min_test_images),
+            "val": torch.utils.data.DataLoader(repeatable_val_sample, batch_size=self.config.min_test_images),
+        }
+
     def fit(self, train_loader, val_loader, test_loader, n_epochs=1, test_freq=0.1, start_epoch=0):
         self.train_loader, self.val_loader, self.test_loader = train_loader, val_loader, test_loader
+        self.cache_repeatable_samples()
+
         self.test_freq = test_freq
         for self.epoch in range(start_epoch, n_epochs):
             self.train_epoch()

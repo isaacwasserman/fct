@@ -74,6 +74,7 @@ class FC_Attention(torch.nn.Module):
         range_width = (max_val - min_val) / 2
         return range_center + range_width * torch.tanh(tensor / range_width)
 
+    @torch.compile()
     def spatial_FLatten_attention(self, x):
         Q = self.q_net(x)
         K = self.k_net(x)

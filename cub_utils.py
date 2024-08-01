@@ -213,7 +213,7 @@ def get_dataset(
         train_ds, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=num_workers
     )
     val_loader = torch.utils.data.DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
+        val_ds, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=num_workers
     )
     test_loader = torch.utils.data.DataLoader(
         val_ds, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers
