@@ -57,9 +57,7 @@ class FC_Attention(torch.nn.Module):
         return M.reshape(B, h, D // h, H, W).reshape(B * h, D // h, H, W)
 
     def sum_pool_to_resolution(self, x, output_resolution=3):
-        # NOTE: Temporarily changing interpolation mode to bilinear because of torch bug
         a = torch.nn.functional.interpolate(x, size=(output_resolution, output_resolution), mode="bilinear")
-        # a = a * (output_resolution**2)
         return a
 
     def phi(self, x, p=2):
@@ -68,11 +66,6 @@ class FC_Attention(torch.nn.Module):
         numerator = torch.norm(x) * xp
         denominator = torch.norm(xp)
         return numerator / denominator
-
-    def soft_clamp(self, tensor, min_val=-32, max_val=32):
-        range_center = (max_val + min_val) / 2
-        range_width = (max_val - min_val) / 2
-        return range_center + range_width * torch.tanh(tensor / range_width)
 
     @torch.compile()
     def spatial_FLatten_attention(self, x):
@@ -117,7 +110,10 @@ class FC_Attention(torch.nn.Module):
 
         if QKV.isinf().any():
             print("QKV has inf")
-            print(QKV)
+            print(phi_Q.min().item(), phi_Q.max().item())
+            print(phi_K.min().item(), phi_K.max().item())
+            print(V.min().item(), V.max().item())
+            print(KV.min().item(), KV.max().item())
             raise ValueError("QKV has inf")
 
         # Unify heads
@@ -135,6 +131,8 @@ class FC_Attention(torch.nn.Module):
             print("QKV has inf")
             print(QKV)
             raise ValueError("QKV has inf")
+        
+        QKV = torch.nn.functional.layer_norm(QKV, QKV.shape[1:])
 
         return QKV
 
