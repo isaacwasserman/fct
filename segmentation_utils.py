@@ -177,7 +177,7 @@ class SegmentationTrainer(torch.nn.Module):
 
     def train_epoch(self):
         for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {self.epoch+1}", total=len(self.train_loader)):
-            with torch.autocast(device_type=device, dtype=torch.float16):
+            with torch.autocast(device_type=device, dtype=torch.float32):
                 imgs, labels = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
                 preds = self.forward(imgs)
                 loss = self.calculate_loss(preds, labels)
