@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Test unet.unet",
             "request": "launch",
@@ -17,6 +18,13 @@
             "console": "integratedTerminal",
             "type": "debugpy",
             "module": "unet.train_cub"
+        },
+        {
+            "name": "Test segformer.fc_segformer.train_cub",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "type": "debugpy",
+            "module": "segformer.fc_segformer.train_cub"
         }
     ]
 }

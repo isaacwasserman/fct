@@ -1,3 +1,4 @@
+from .fc_segformer import FC_SegformerForSemanticSegmentation, FC_SegformerConfig
 import os
 from torchmetrics import MeanAbsoluteError
 from transformers import SegformerForSemanticSegmentation, SegformerConfig
@@ -12,10 +13,20 @@ import torch
 import json
 
 if __name__ == "__main__":
+
+    class FCT_Segmentor(SegmentationTrainer):
+        def __init__(self, **kwargs):
+            self.config = FC_SegformerConfig(**kwargs["architecture"])
+            self.model = FC_SegformerForSemanticSegmentation(self.config)
+            kwargs["model"] = self.model
+            super().__init__(**kwargs)
+
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print("Device:", device)
 
-    configuration_dict = {
+    train_loader, val_loader, test_loader = get_dataset(batch_size=192)
+
+    config_dict = {
         "num_labels": 1,
         "num_encoder_blocks": 4,
         "depths": [2, 2, 2, 2],
@@ -34,13 +45,17 @@ if __name__ == "__main__":
         "layer_norm_eps": 1e-6,
         "decoder_hidden_size": 256,
         "semantic_loss_ignore_index": 255,
+        "input_resolution": (256, 256),
+        "attention_kernel_size": 1,
+        "feedforward_kernel_size": 1,
+        "decoder_kernel_size": 1,
     }
 
-    model_config = SegformerConfig(**configuration_dict)
+    model_config = FC_SegformerConfig(**config_dict)
 
     train_loader, val_loader, test_loader = get_dataset(batch_size=192)
 
-    model = SegformerForSemanticSegmentation(model_config).to(device)
+    model = FC_SegformerForSemanticSegmentation(model_config).to(device)
 
     mae = MeanAbsoluteError().to(device)
     inv_mae = lambda y_hat, y: 1 - mae(y_hat, y)
@@ -57,8 +72,8 @@ if __name__ == "__main__":
     trainer = SegmentationTrainer(model=model, config=trainer_config)
 
     should_resume = False
-    run_id = "2vhhtkyg" if should_resume else None
-    wandb.init(project="segformer", config=configuration_dict, id=run_id, resume="must" if should_resume else "never")
+    run_id = "fgojrmvg" if should_resume else None
+    wandb.init(project="segformer", config=config_dict, id=run_id, resume="must" if should_resume else "never")
 
     start_epoch = 0
     if should_resume:

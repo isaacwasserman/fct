@@ -16,7 +16,6 @@ from transformers.activations import ACT2FN
 import torch.nn as nn
 from fct import FC_Attention
 
-from fct.segmentation_utils import SegmentationTrainer, get_dataset
 from utils import *
 import torch
 

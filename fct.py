@@ -39,7 +39,11 @@ class FC_Attention(torch.nn.Module):
                 v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
             )
         self.dwc = torch.nn.Conv2d(
-            v_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single"), groups=v_dim
+            v_dim // num_heads,
+            v_dim // num_heads,
+            kernel_size=kernel_size,
+            padding=same_padding(kernel_size, format="single"),
+            groups=v_dim // num_heads,
         )
         self.num_heads = num_heads
         self.kernel_size = kernel_size
@@ -62,12 +66,12 @@ class FC_Attention(torch.nn.Module):
 
     def phi(self, x, p=2):
         x = torch.nn.functional.relu(x)
-        xp = x ** p
+        xp = x**p
         numerator = torch.norm(x) * xp
         denominator = torch.norm(xp)
         return numerator / denominator
 
-    @torch.compile()
+    # @torch.compile()
     def spatial_FLatten_attention(self, x):
         Q = self.q_net(x)
         K = self.k_net(x)
@@ -89,9 +93,9 @@ class FC_Attention(torch.nn.Module):
         KV = KV.reshape(-1, *KV.shape[2:])
         KV = self.sum_pool_to_resolution(KV, output_resolution=self.kernel_size)
 
-        abs_max = 32 / (self.kernel_size ** 2)
+        abs_max = 32 / (self.kernel_size**2)
         KV = KV.clamp(min=-abs_max, max=abs_max)
-        
+
         KV = KV.reshape(B * h, Dq // h, Dv // h, self.kernel_size, self.kernel_size)
         KV = KV.permute(0, 2, 1, 3, 4)
         KV = KV.reshape(-1, *KV.shape[2:])
@@ -105,7 +109,9 @@ class FC_Attention(torch.nn.Module):
             bias = bias.reshape(-1)
 
         # QKV is grouped (B*h groups) convolution of Q with KV
-        QKV = torch.nn.functional.conv2d(phi_Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single"))
+        QKV = torch.nn.functional.conv2d(
+            phi_Q, KV, bias=bias, groups=B * h, padding=same_padding(KV.shape[-1], format="single")
+        )
         QKV = QKV.view(B, Dv, H, W)
 
         if QKV.isinf().any():
@@ -125,13 +131,13 @@ class FC_Attention(torch.nn.Module):
             print(QKV)
             raise ValueError("QKV has inf")
 
-        QKV = QKV + self.dwc(V)
+        QKV = QKV + self.dwc(V).reshape(B, Dv, H, W)
 
         if QKV.isinf().any():
             print("QKV has inf")
             print(QKV)
             raise ValueError("QKV has inf")
-        
+
         QKV = torch.nn.functional.layer_norm(QKV, QKV.shape[1:])
 
         return QKV
