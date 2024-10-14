@@ -46,14 +46,17 @@ if __name__ == "__main__":
         "decoder_hidden_size": 256,
         "semantic_loss_ignore_index": 255,
         "input_resolution": (256, 256),
-        "attention_kernel_size": 1,
-        "feedforward_kernel_size": 1,
-        "decoder_kernel_size": 1,
+        "attention_kernel_size": 3,
+        "feedforward_kernel_size": 3,
+        "decoder_kernel_size": 3,
     }
 
     model_config = FC_SegformerConfig(**config_dict)
 
-    train_loader, val_loader, test_loader = get_dataset(batch_size=192)
+    effective_batch_size = 192
+    true_batch_size = 96
+    iters_to_accumulate = effective_batch_size // true_batch_size
+    train_loader, val_loader, test_loader = get_dataset(batch_size=true_batch_size)
 
     model = FC_SegformerForSemanticSegmentation(model_config).to(device)
 
@@ -68,11 +71,12 @@ if __name__ == "__main__":
         device=device,
         sample_output_fn=cub_utils.generate_sample_output,
         model_config=model_config,
+        iters_to_accumulate=iters_to_accumulate,
     )
     trainer = SegmentationTrainer(model=model, config=trainer_config)
 
-    should_resume = False
-    run_id = "fgojrmvg" if should_resume else None
+    should_resume = True
+    run_id = "n5cpaoug" if should_resume else None
     wandb.init(project="segformer", config=config_dict, id=run_id, resume="must" if should_resume else "never")
 
     start_epoch = 0
@@ -80,6 +84,7 @@ if __name__ == "__main__":
         checkpoint_dir = f"checkpoints/{run_id}"
         checkpoint = torch.load(checkpoint_dir + "/vit.pth")
         if "epoch" in checkpoint:
+            print("Resuming from epoch", checkpoint["epoch"])
             start_epoch = checkpoint["epoch"]
             state_dict = checkpoint["state_dict"]
             trainer.optimizer = checkpoint["optimizer"]
@@ -91,4 +96,4 @@ if __name__ == "__main__":
                 start_epoch = metadata["epoch"]
         trainer.model.load_state_dict(state_dict)
 
-    trainer.fit(train_loader, val_loader, test_loader, n_epochs=5000, test_freq=10)
+    trainer.fit(train_loader, val_loader, test_loader, n_epochs=5000, test_freq=10, start_epoch=start_epoch)

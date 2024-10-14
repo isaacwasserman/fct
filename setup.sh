@@ -7,8 +7,8 @@ tar -xf google-cloud-cli-linux-x86_64.tar.gz
 ./google-cloud-sdk/install.sh
 ./google-cloud-sdk/bin/gcloud init
 
-git config --global user.email "you@example.com"
-git config --global user.name "Your Name"
+git config --global user.email "isaacrwasserman@gmail.com"
+git config --global user.name "Isaac Wasserman"
 
 wandb login
 

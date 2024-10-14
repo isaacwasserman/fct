@@ -72,6 +72,7 @@ class SegmentationTrainerConfig:
         sample_output_fn=None,
         model_config=None,
         min_test_images=4,
+        iters_to_accumulate=1,
     ):
         self.device = device
         self.ignore_index = ignore_index
@@ -87,6 +88,7 @@ class SegmentationTrainerConfig:
         if self.sample_output_fn is None:
             raise ValueError("sample_output_fn must be provided")
         self.model_config = model_config
+        self.iters_to_accumulate = iters_to_accumulate
 
     def __to_dict__(self):
         # Get default dict
@@ -94,7 +96,8 @@ class SegmentationTrainerConfig:
         for key, value in d.items():
             if hasattr(value, "__to_dict__"):
                 d[key] = value.__to_dict__()
-                
+
+
 class SegmentationTrainer(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, config: SegmentationTrainerConfig):
         super().__init__()
@@ -176,6 +179,8 @@ class SegmentationTrainer(torch.nn.Module):
         return accumulated_accuracy
 
     def train_epoch(self):
+        accumulated_loss = 0
+        accumulated_accuracy = 0
         for batch_idx, batch in tqdm(enumerate(self.train_loader), desc=f"Epoch {self.epoch+1}", total=len(self.train_loader)):
             with torch.autocast(device_type=device, dtype=torch.float32):
                 imgs, labels = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
@@ -187,14 +192,28 @@ class SegmentationTrainer(torch.nn.Module):
                         self.log_test()
 
             self.grad_scaler.scale(loss).backward()
-            self.grad_scaler.step(self.optimizer)
-            self.grad_scaler.update()
-            self.optimizer.zero_grad(set_to_none=True)
-            wandb.log({"train_accuracy": accuracy, "train_loss": loss})
+            accumulated_loss += loss.item()
+            accumulated_accuracy += accuracy.item()
+            if (batch_idx + 1) % self.config.iters_to_accumulate == 0:
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+                self.optimizer.zero_grad(set_to_none=True)
+                wandb.log(
+                    {
+                        "train_accuracy": accumulated_accuracy / self.config.iters_to_accumulate,
+                        "train_loss": accumulated_loss / self.config.iters_to_accumulate,
+                    }
+                )
+                accumulated_loss = 0
+                accumulated_accuracy = 0
 
     def cache_repeatable_samples(self):
-        repeatable_train_sample_indices = np.linspace(0, len(self.train_loader.dataset), self.config.min_test_images, endpoint=False, dtype=int)
-        repeatable_val_sample_indices = np.linspace(0, len(self.val_loader.dataset), self.config.min_test_images, endpoint=False, dtype=int)
+        repeatable_train_sample_indices = np.linspace(
+            0, len(self.train_loader.dataset), self.config.min_test_images, endpoint=False, dtype=int
+        )
+        repeatable_val_sample_indices = np.linspace(
+            0, len(self.val_loader.dataset), self.config.min_test_images, endpoint=False, dtype=int
+        )
         repeatable_train_sample = torch.utils.data.Subset(self.train_loader.dataset, repeatable_train_sample_indices)
         repeatable_val_sample = torch.utils.data.Subset(self.val_loader.dataset, repeatable_val_sample_indices)
         self.repeatable_samples = {
