@@ -32,6 +32,9 @@ class FC_SegformerEfficientSelfAttention(SegformerEfficientSelfAttention):
             internal_resolution=(height, width),
             block_index=0,
             kernel_size=config.attention_kernel_size,
+            use_attention_bias=config.use_attention_bias,
+            key_projection_stride=config.key_projection_stride,
+            value_projection_stride=config.value_projection_stride,
         )
 
     def forward(
@@ -349,6 +352,9 @@ class FC_SegformerConfig(SegformerConfig):
         layer_norm_eps=1e-6,
         decoder_hidden_size=256,
         semantic_loss_ignore_index=255,
+        use_attention_bias=True,
+        key_projection_stride=1,
+        value_projection_stride=1,
         **kwargs,
     ):
         super().__init__(
@@ -376,3 +382,6 @@ class FC_SegformerConfig(SegformerConfig):
         self.attention_kernel_size = attention_kernel_size
         self.feedforward_kernel_size = feedforward_kernel_size
         self.decoder_kernel_size = decoder_kernel_size
+        self.use_attention_bias = use_attention_bias
+        self.key_projection_stride = key_projection_stride
+        self.value_projection_stride = value_projection_stride

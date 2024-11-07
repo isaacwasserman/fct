@@ -17,16 +17,26 @@ class FC_Attention(torch.nn.Module):
         internal_resolution=(32, 32),
         kernel_size=1,
         use_attention_bias=True,
+        key_projection_stride=1,
+        value_projection_stride=1,
     ):
         super().__init__()
         self.q_net = torch.nn.Conv2d(
             embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
         self.k_net = torch.nn.Conv2d(
-            embed_dim, q_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+            embed_dim,
+            q_dim,
+            kernel_size=kernel_size,
+            stride=key_projection_stride,
+            padding=same_padding(kernel_size, format="single"),
         )
         self.v_net = torch.nn.Conv2d(
-            embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
+            embed_dim,
+            v_dim,
+            kernel_size=kernel_size,
+            stride=value_projection_stride,
+            padding=same_padding(kernel_size, format="single"),
         )
         if use_attention_bias:
             # self.bias_net = torch.nn.Sequential(
@@ -140,7 +150,8 @@ class FC_Attention(torch.nn.Module):
         #     print(QKV)
         #     raise ValueError("QKV has inf")
 
-        QKV = QKV + self.dwc(V).reshape(B, Dv, H, W)
+        # dwc = self.dwc(V) # (B, Dv, H // value_projection_stride, W)
+        # QKV = QKV + self.dwc(V).reshape(B, Dv, H, W)
 
         # if QKV.isinf().any():
         #     print("QKV has inf")

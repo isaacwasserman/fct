@@ -49,6 +49,9 @@ if __name__ == "__main__":
         "attention_kernel_size": 3,
         "feedforward_kernel_size": 3,
         "decoder_kernel_size": 3,
+        "use_attention_bias": True,
+        "key_projection_stride": 3,
+        "value_projection_stride": 3,
     }
 
     model_config = FC_SegformerConfig(**config_dict)
