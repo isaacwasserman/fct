@@ -29,11 +29,14 @@ class FC_Attention(torch.nn.Module):
             embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
         )
         if use_attention_bias:
-            self.bias_net = torch.nn.Sequential(
-                torch.nn.Conv2d(embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
-                torch.nn.AvgPool2d(kernel_size=internal_resolution),
-            )
-            self.bias_norm = torch.nn.LayerNorm(v_dim)
+            # self.bias_net = torch.nn.Sequential(
+            #     torch.nn.Conv2d(embed_dim, v_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")),
+            #     torch.nn.AvgPool2d(kernel_size=internal_resolution),
+            # )
+            # self.bias_norm = torch.nn.LayerNorm(v_dim)
+
+            # Squeeze and excite bias
+            self.bias_net = torch.nn.Linear(embed_dim, v_dim)
         if num_heads > 1:
             self.head_unification = torch.nn.Conv2d(
                 v_dim, embed_dim, kernel_size=kernel_size, padding=same_padding(kernel_size, format="single")
@@ -104,9 +107,15 @@ class FC_Attention(torch.nn.Module):
         phi_Q = phi_Q.reshape(-1, *phi_Q.shape[2:]).unsqueeze(0)
         bias = None
         if self.use_attention_bias:
-            bias = self.bias_net(x)
-            bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-            bias = bias.reshape(-1)
+            # bias = self.bias_net(x)
+            # bias = self.bias_norm(bias.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            # bias = bias.reshape(-1)
+            # Global pool x to B, Dm, 1, 1
+
+            # Squeeze and excite bias
+            squeezed = x.mean(dim=(2, 3))
+            excited = self.bias_net(squeezed)
+            bias = excited.reshape(-1)
 
         # QKV is grouped (B*h groups) convolution of Q with KV
         QKV = torch.nn.functional.conv2d(
@@ -114,29 +123,29 @@ class FC_Attention(torch.nn.Module):
         )
         QKV = QKV.view(B, Dv, H, W)
 
-        if QKV.isinf().any():
-            print("QKV has inf")
-            print(phi_Q.min().item(), phi_Q.max().item())
-            print(phi_K.min().item(), phi_K.max().item())
-            print(V.min().item(), V.max().item())
-            print(KV.min().item(), KV.max().item())
-            raise ValueError("QKV has inf")
+        # if QKV.isinf().any():
+        #     print("QKV has inf")
+        #     print(phi_Q.min().item(), phi_Q.max().item())
+        #     print(phi_K.min().item(), phi_K.max().item())
+        #     print(V.min().item(), V.max().item())
+        #     print(KV.min().item(), KV.max().item())
+        #     raise ValueError("QKV has inf")
 
         # Unify heads
         if h > 1:
             QKV = self.head_unification(QKV)
 
-        if QKV.isinf().any():
-            print("QKV has inf")
-            print(QKV)
-            raise ValueError("QKV has inf")
+        # if QKV.isinf().any():
+        #     print("QKV has inf")
+        #     print(QKV)
+        #     raise ValueError("QKV has inf")
 
         QKV = QKV + self.dwc(V).reshape(B, Dv, H, W)
 
-        if QKV.isinf().any():
-            print("QKV has inf")
-            print(QKV)
-            raise ValueError("QKV has inf")
+        # if QKV.isinf().any():
+        #     print("QKV has inf")
+        #     print(QKV)
+        #     raise ValueError("QKV has inf")
 
         QKV = torch.nn.functional.layer_norm(QKV, QKV.shape[1:])
 

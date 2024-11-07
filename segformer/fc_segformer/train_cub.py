@@ -75,7 +75,7 @@ if __name__ == "__main__":
     )
     trainer = SegmentationTrainer(model=model, config=trainer_config)
 
-    should_resume = True
+    should_resume = False
     run_id = "n5cpaoug" if should_resume else None
     wandb.init(project="segformer", config=config_dict, id=run_id, resume="must" if should_resume else "never")
 
