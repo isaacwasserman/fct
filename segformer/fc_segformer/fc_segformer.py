@@ -15,6 +15,7 @@ from transformers.activations import ACT2FN
 
 import torch.nn as nn
 from fct import FC_Attention
+from segmentation_utils import SegmentationTrainer
 
 from utils import *
 import torch
@@ -31,10 +32,27 @@ class FC_SegformerEfficientSelfAttention(SegformerEfficientSelfAttention):
             num_heads=num_attention_heads,
             internal_resolution=(height, width),
             block_index=0,
-            kernel_size=config.attention_kernel_size,
-            use_attention_bias=config.use_attention_bias,
+            query_projection_kernel_size=config.query_projection_kernel_size,
+            key_projection_kernel_size=config.key_projection_kernel_size,
+            value_projection_kernel_size=config.value_projection_kernel_size,
+            kv_kernel_size=config.kv_kernel_size,
+            head_unification_kernel_size=config.head_unification_kernel_size,
+            query_projection_stride=config.query_projection_stride,
             key_projection_stride=config.key_projection_stride,
             value_projection_stride=config.value_projection_stride,
+            kv_stride=config.kv_stride,
+            head_unification_stride=config.head_unification_stride,
+            query_projection_padding=config.query_projection_padding,
+            key_projection_padding=config.key_projection_padding,
+            value_projection_padding=config.value_projection_padding,
+            kv_padding=config.kv_padding,
+            head_unification_padding=config.head_unification_padding,
+            query_projection_dilation_factor=config.query_projection_dilation_factor,
+            key_projection_dilation_factor=config.key_projection_dilation_factor,
+            value_projection_dilation_factor=config.value_projection_dilation_factor,
+            kv_dilation_factor=config.kv_dilation_factor,
+            head_unification_dilation_factor=config.head_unification_dilation_factor,
+            use_attention_bias=config.use_attention_bias,
         )
 
     def forward(
@@ -352,9 +370,27 @@ class FC_SegformerConfig(SegformerConfig):
         layer_norm_eps=1e-6,
         decoder_hidden_size=256,
         semantic_loss_ignore_index=255,
-        use_attention_bias=True,
+        query_projection_kernel_size=1,
+        key_projection_kernel_size=3,
+        value_projection_kernel_size=3,
+        kv_kernel_size=3,
+        head_unification_kernel_size=3,
+        query_projection_stride=1,
         key_projection_stride=1,
         value_projection_stride=1,
+        kv_stride=1,
+        head_unification_stride=1,
+        query_projection_padding=0,
+        key_projection_padding=1,
+        value_projection_padding=1,
+        kv_padding=1,
+        head_unification_padding=1,
+        query_projection_dilation_factor=0,
+        key_projection_dilation_factor=0,
+        value_projection_dilation_factor=0,
+        kv_dilation_factor=0,
+        head_unification_dilation_factor=0,
+        use_attention_bias=True,
         **kwargs,
     ):
         super().__init__(
@@ -382,6 +418,32 @@ class FC_SegformerConfig(SegformerConfig):
         self.attention_kernel_size = attention_kernel_size
         self.feedforward_kernel_size = feedforward_kernel_size
         self.decoder_kernel_size = decoder_kernel_size
-        self.use_attention_bias = use_attention_bias
+        self.query_projection_kernel_size = query_projection_kernel_size
+        self.key_projection_kernel_size = key_projection_kernel_size
+        self.value_projection_kernel_size = value_projection_kernel_size
+        self.kv_kernel_size = kv_kernel_size
+        self.head_unification_kernel_size = head_unification_kernel_size
+        self.query_projection_stride = query_projection_stride
         self.key_projection_stride = key_projection_stride
         self.value_projection_stride = value_projection_stride
+        self.kv_stride = kv_stride
+        self.head_unification_stride = head_unification_stride
+        self.query_projection_padding = query_projection_padding
+        self.key_projection_padding = key_projection_padding
+        self.value_projection_padding = value_projection_padding
+        self.kv_padding = kv_padding
+        self.head_unification_padding = head_unification_padding
+        self.query_projection_dilation_factor = query_projection_dilation_factor
+        self.key_projection_dilation_factor = key_projection_dilation_factor
+        self.value_projection_dilation_factor = value_projection_dilation_factor
+        self.kv_dilation_factor = kv_dilation_factor
+        self.head_unification_dilation_factor = head_unification_dilation_factor
+        self.use_attention_bias = use_attention_bias
+
+
+class FCT_Segmentor(SegmentationTrainer):
+    def __init__(self, **kwargs):
+        self.config = FC_SegformerConfig(**kwargs["architecture"])
+        self.model = FC_SegformerForSemanticSegmentation(self.config)
+        kwargs["model"] = self.model
+        super().__init__(**kwargs)
